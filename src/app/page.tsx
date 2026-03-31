@@ -12,16 +12,31 @@ import {
   VolumeX,
   MessageSquare,
   Loader2,
-  UserPlus,
+  Users,
   X,
   Mic,
 } from "lucide-react";
 
 export default function Home() {
-  const { user, isLoading: userLoading, resetUser } = useUser();
+  const {
+    user,
+    users,
+    error: userError,
+    isLoading: userLoading,
+    resetUser,
+    login,
+    createUser,
+    clearError: clearUserError,
+  } = useUser();
   const [isMuted, setIsMuted] = useState(false);
   const [inputMode, setInputMode] = useState<"voice" | "text">("text");
   const [textInput, setTextInput] = useState("");
+  const [showUsersPanel, setShowUsersPanel] = useState(false);
+  const [loginUsername, setLoginUsername] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [newUsername, setNewUsername] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [newDisplayName, setNewDisplayName] = useState("");
   const sentBlobRef = useRef<Blob | null>(null);
   const onboardingStartedRef = useRef(false);
 
@@ -96,6 +111,36 @@ export default function Home() {
     }
   }, [chat, resetUser]);
 
+  const handleLogin = useCallback(
+    async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!loginUsername.trim() || !loginPassword.trim()) return;
+      const result = await login(loginUsername.trim(), loginPassword);
+      if (result) {
+        chat.clearSession();
+        window.location.reload();
+      }
+    },
+    [chat, login, loginPassword, loginUsername]
+  );
+
+  const handleCreateUser = useCallback(
+    async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!newUsername.trim() || !newPassword.trim()) return;
+      const result = await createUser(
+        newUsername.trim(),
+        newPassword,
+        newDisplayName.trim() || undefined
+      );
+      if (result) {
+        chat.clearSession();
+        window.location.reload();
+      }
+    },
+    [chat, createUser, newDisplayName, newPassword, newUsername]
+  );
+
   if (userLoading) {
     return (
       <div className="flex items-center justify-center h-dvh">
@@ -123,12 +168,15 @@ export default function Home() {
         </div>
         <div className="flex items-center gap-1">
           <button
-            onClick={handleNewUser}
+            onClick={() => {
+              setShowUsersPanel((v) => !v);
+              clearUserError();
+            }}
             className="p-2 rounded-lg hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
-            aria-label="Nový uživatel"
-            title="Nový profil"
+            aria-label="Správa uživatelů"
+            title="Správa uživatelů"
           >
-            <UserPlus className="w-5 h-5 text-neutral-500" />
+            <Users className="w-5 h-5 text-neutral-500" />
           </button>
           <button
             onClick={() => setIsMuted(!isMuted)}
@@ -157,6 +205,93 @@ export default function Home() {
         </div>
       </header>
 
+      {showUsersPanel && (
+        <div className="px-4 py-3 border-b border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900 space-y-3">
+          <p className="text-sm text-neutral-600 dark:text-neutral-300">
+            Přihlášený:{" "}
+            <span className="font-medium">
+              {user.username || user.displayName || "Anonymní uživatel"}
+            </span>
+          </p>
+
+          <div className="text-xs text-neutral-500">
+            Existující uživatelé:{" "}
+            {users
+              .filter((u) => !u.isAnonymous && u.username)
+              .map((u) => u.username)
+              .join(", ") || "žádní"}
+          </div>
+
+          <form onSubmit={handleLogin} className="grid grid-cols-1 gap-2">
+            <p className="text-sm font-medium">Přepnout uživatele</p>
+            <input
+              type="text"
+              value={loginUsername}
+              onChange={(e) => setLoginUsername(e.target.value)}
+              placeholder="Uživatelské jméno"
+              className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-transparent px-3 py-2 text-sm"
+            />
+            <input
+              type="password"
+              value={loginPassword}
+              onChange={(e) => setLoginPassword(e.target.value)}
+              placeholder="Heslo"
+              className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-transparent px-3 py-2 text-sm"
+            />
+            <button
+              type="submit"
+              className="px-3 py-2 rounded-lg bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 text-sm font-medium"
+            >
+              Přihlásit / Přepnout
+            </button>
+          </form>
+
+          <form onSubmit={handleCreateUser} className="grid grid-cols-1 gap-2">
+            <p className="text-sm font-medium">Přidat nového uživatele</p>
+            <input
+              type="text"
+              value={newUsername}
+              onChange={(e) => setNewUsername(e.target.value)}
+              placeholder="Nové uživatelské jméno"
+              className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-transparent px-3 py-2 text-sm"
+              required
+            />
+            <input
+              type="password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              placeholder="Nové heslo"
+              className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-transparent px-3 py-2 text-sm"
+              required
+            />
+            <input
+              type="text"
+              value={newDisplayName}
+              onChange={(e) => setNewDisplayName(e.target.value)}
+              placeholder="Zobrazované jméno (volitelné)"
+              className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-transparent px-3 py-2 text-sm"
+            />
+            <button
+              type="submit"
+              className="px-3 py-2 rounded-lg bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 text-sm font-medium"
+            >
+              Vytvořit uživatele
+            </button>
+          </form>
+
+          <button
+            onClick={handleNewUser}
+            className="text-sm text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
+          >
+            Vytvořit anonymní profil
+          </button>
+
+          {userError && (
+            <p className="text-sm text-red-600 dark:text-red-400">{userError}</p>
+          )}
+        </div>
+      )}
+
       {/* Error banner */}
       {chat.error && (
         <div className="px-4 py-3 bg-red-50 dark:bg-red-950/30 border-b border-red-200 dark:border-red-800 flex items-center justify-between gap-2">
@@ -166,6 +301,18 @@ export default function Home() {
           <button onClick={chat.clearError} className="flex-shrink-0">
             <X className="w-4 h-4 text-red-400" />
           </button>
+        </div>
+      )}
+
+      {chat.onboardingProgress?.isOnboarding ? (
+        <div className="px-4 py-2 border-b border-neutral-200 dark:border-neutral-800 text-xs text-neutral-600 dark:text-neutral-300">
+          Krok onboardingu: {chat.onboardingProgress.currentStep}/
+          {chat.onboardingProgress.totalSteps} -{" "}
+          {chat.onboardingProgress.stepLabel}
+        </div>
+      ) : (
+        <div className="px-4 py-2 border-b border-neutral-200 dark:border-neutral-800 text-xs text-neutral-600 dark:text-neutral-300">
+          Režim: běžná konverzace (agenti aktivní)
         </div>
       )}
 

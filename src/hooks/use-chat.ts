@@ -9,6 +9,14 @@ export interface ChatMessage {
   timestamp: Date;
 }
 
+export interface OnboardingProgress {
+  isOnboarding: boolean;
+  currentStep: number;
+  totalSteps: number;
+  stepId: string;
+  stepLabel: string;
+}
+
 interface UseChatOptions {
   userId: string;
 }
@@ -23,6 +31,8 @@ export function useChat({ userId }: UseChatOptions) {
   const [error, setError] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [currentMode, setCurrentMode] = useState<string>("mixed");
+  const [onboardingProgress, setOnboardingProgress] =
+    useState<OnboardingProgress | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const isMutedRef = useRef(false);
 
@@ -35,6 +45,8 @@ export function useChat({ userId }: UseChatOptions) {
     } else {
       setSessionId(null);
     }
+    setMessages([]);
+    setOnboardingProgress(null);
   }, [userId]);
 
   const persistSessionId = useCallback(
@@ -82,6 +94,7 @@ export function useChat({ userId }: UseChatOptions) {
           persistSessionId(data.sessionId);
         }
         setCurrentMode(data.mode);
+        setOnboardingProgress(data.onboardingProgress ?? null);
 
         setMessages((prev) => [
           ...prev,
@@ -139,6 +152,7 @@ export function useChat({ userId }: UseChatOptions) {
           persistSessionId(data.sessionId);
         }
         setCurrentMode(data.mode);
+        setOnboardingProgress(data.onboardingProgress ?? null);
 
         setMessages((prev) => [
           ...prev,
@@ -205,6 +219,8 @@ export function useChat({ userId }: UseChatOptions) {
       localStorage.removeItem(getSessionStorageKey(userId));
     }
     setSessionId(null);
+    setOnboardingProgress(null);
+    setMessages([]);
   }, [userId]);
 
   return {
@@ -213,6 +229,7 @@ export function useChat({ userId }: UseChatOptions) {
     error,
     sessionId,
     currentMode,
+    onboardingProgress,
     sendAudio,
     sendText,
     setMuted,

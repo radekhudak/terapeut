@@ -16,6 +16,8 @@ import {
 export const users = pgTable("users", {
   id: uuid("id").defaultRandom().primaryKey(),
   displayName: varchar("display_name", { length: 100 }),
+  username: varchar("username", { length: 50 }).unique(),
+  passwordHash: text("password_hash"),
   email: varchar("email", { length: 255 }).unique(),
   // SSO fields -- null until auth is enabled
   authProvider: varchar("auth_provider", { length: 30 }), // google | apple | github | email | null

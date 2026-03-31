@@ -77,6 +77,7 @@ export async function handleChat(input: ChatInput): Promise<ChatResponse> {
   let responseText: string;
   let mode: SessionMode = "mixed";
   const goalsUpdated = false;
+  let onboardingProgress: ChatResponse["onboardingProgress"];
 
   if (isOnboarding) {
     responseText = await handleOnboarding(
@@ -85,6 +86,7 @@ export async function handleChat(input: ChatInput): Promise<ChatResponse> {
       transcript
     );
     mode = "mixed";
+    onboardingProgress = await getOnboardingProgress(input.userId);
   } else {
     const result = await handleNormalChat(
       input.userId,
@@ -111,6 +113,7 @@ export async function handleChat(input: ChatInput): Promise<ChatResponse> {
     mode,
     goalsUpdated,
     sessionId,
+    onboardingProgress,
   };
 }
 
@@ -254,6 +257,32 @@ function hasAllRequiredOnboardingPhases(coveredAreas: string[]): boolean {
   return REQUIRED_ONBOARDING_PHASE_IDS.every((phaseId) =>
     coveredAreas.includes(phaseId)
   );
+}
+
+function getOnboardingStepMeta(phaseId: string): { step: number; label: string } {
+  if (phaseId === ONBOARDING_REVIEW_PHASE) {
+    return { step: ONBOARDING_PHASE_IDS.length + 1, label: "Potvrzení shrnutí" };
+  }
+  const idx = ONBOARDING_PHASE_IDS.indexOf(phaseId);
+  if (idx < 0) return { step: 1, label: "Úvod" };
+  return {
+    step: idx + 1,
+    label: ONBOARDING_PHASES[idx]?.label ?? "Úvod",
+  };
+}
+
+async function getOnboardingProgress(userId: string) {
+  const state = await getOnboardingState(userId);
+  const coveredAreas = normalizeCoveredAreas(state.coveredAreas);
+  const phaseId = resolveCurrentOnboardingPhase(state.currentPhase, coveredAreas);
+  const meta = getOnboardingStepMeta(phaseId);
+  return {
+    isOnboarding: phaseId !== "done",
+    currentStep: meta.step,
+    totalSteps: ONBOARDING_PHASE_IDS.length + 1,
+    stepId: phaseId,
+    stepLabel: meta.label,
+  };
 }
 
 export const __onboardingTestUtils = {

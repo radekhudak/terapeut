@@ -201,5 +201,14 @@ export const ChatResponseSchema = z.object({
   mode: SessionMode,
   goalsUpdated: z.boolean(),
   sessionId: z.string().uuid(),
+  onboardingProgress: z
+    .object({
+      isOnboarding: z.boolean(),
+      currentStep: z.number().int().min(0),
+      totalSteps: z.number().int().min(1),
+      stepId: z.string(),
+      stepLabel: z.string(),
+    })
+    .optional(),
 });
 export type ChatResponse = z.infer<typeof ChatResponseSchema>;
