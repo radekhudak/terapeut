@@ -220,7 +220,7 @@ export const mediaEntries = pgTable("media_entries", {
 export const onboardingState = pgTable("onboarding_state", {
   id: uuid("id").defaultRandom().primaryKey(),
   userId: uuid("user_id").notNull().unique(),
-  currentPhase: varchar("current_phase", { length: 10 }).default("A"), // A | B | C | done
+  currentPhase: varchar("current_phase", { length: 30 }).default("A"),
   coveredAreas: jsonb("covered_areas").default([]),
   pendingAreas: jsonb("pending_areas").default([]),
   diagnosticData: jsonb("diagnostic_data").default({}),
