@@ -39,6 +39,7 @@ export default function Home() {
       user &&
       !userLoading &&
       chat.messages.length === 0 &&
+      !chat.sessionId &&
       !chat.isLoading &&
       !onboardingStartedRef.current
     ) {
@@ -89,10 +90,11 @@ export default function Home() {
   const handleNewUser = useCallback(async () => {
     if (confirm("Vytvořit nový profil? Aktuální konverzace se ztratí.")) {
       onboardingStartedRef.current = false;
+      chat.clearSession();
       await resetUser();
       window.location.reload();
     }
-  }, [resetUser]);
+  }, [chat, resetUser]);
 
   if (userLoading) {
     return (

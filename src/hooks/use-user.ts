@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 
 const STORAGE_KEY = "terapeut_user_id";
+const SESSION_KEY_PREFIX = "terapeut_session_id_";
 
 interface User {
   id: string;
@@ -32,6 +33,7 @@ export function useUser() {
           return;
         }
         // User not found in DB, create new one
+        localStorage.removeItem(`${SESSION_KEY_PREFIX}${storedId}`);
         localStorage.removeItem(STORAGE_KEY);
       }
 
@@ -55,6 +57,10 @@ export function useUser() {
   }
 
   const resetUser = useCallback(async () => {
+    const currentUserId = localStorage.getItem(STORAGE_KEY);
+    if (currentUserId) {
+      localStorage.removeItem(`${SESSION_KEY_PREFIX}${currentUserId}`);
+    }
     localStorage.removeItem(STORAGE_KEY);
     setUser(null);
     setIsLoading(true);

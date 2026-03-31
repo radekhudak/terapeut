@@ -122,6 +122,8 @@ interface OnboardingPhase {
   prompt: string;
 }
 
+const ONBOARDING_REVIEW_PHASE = "summary_review";
+
 const ONBOARDING_PHASES: OnboardingPhase[] = [
   {
     id: "reason",
@@ -197,32 +199,140 @@ Buď strukturovaný a věcný.`,
   },
 ];
 
+const ONBOARDING_PHASE_IDS = ONBOARDING_PHASES.map((p) => p.id);
+const REQUIRED_ONBOARDING_PHASE_IDS = [...ONBOARDING_PHASE_IDS];
+
+function mapLegacyPhaseToCurrent(phase: string): string {
+  if (phase === "A") return "reason";
+  if (phase === "B") return "deep_dive";
+  if (phase === "C") return "interaction_style";
+  return phase;
+}
+
+function normalizeCoveredAreas(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (value): value is string =>
+      typeof value === "string" && ONBOARDING_PHASE_IDS.includes(value)
+  );
+}
+
+function getNextOnboardingPhase(currentPhaseId: string): string | null {
+  const currentIndex = ONBOARDING_PHASE_IDS.indexOf(currentPhaseId);
+  if (currentIndex < 0) return ONBOARDING_PHASE_IDS[0] ?? null;
+  if (currentIndex === ONBOARDING_PHASE_IDS.length - 1)
+    return ONBOARDING_REVIEW_PHASE;
+  return ONBOARDING_PHASE_IDS[currentIndex + 1] ?? null;
+}
+
+function resolveCurrentOnboardingPhase(
+  currentPhaseRaw: string | null | undefined,
+  coveredAreas: string[]
+): string {
+  const legacyMapped = mapLegacyPhaseToCurrent(currentPhaseRaw ?? "");
+
+  if (legacyMapped === "done") return "done";
+  if (legacyMapped === ONBOARDING_REVIEW_PHASE) return ONBOARDING_REVIEW_PHASE;
+  if (ONBOARDING_PHASE_IDS.includes(legacyMapped)) return legacyMapped;
+
+  const nextUncovered =
+    ONBOARDING_PHASE_IDS.find((phaseId) => !coveredAreas.includes(phaseId)) ??
+    ONBOARDING_REVIEW_PHASE;
+  return nextUncovered;
+}
+
+function isSummaryConfirmed(text: string): boolean {
+  const normalized = text.toLowerCase();
+  return (
+    /(\bano\b|\bsed[ií]\b|\bp[řr]esn[ěe]\b|\bsouhlas[ií]m\b|\bd[áa]v[áa]\s+to\s+smysl\b)/i.test(
+      normalized
+    ) && !/\bne\b|\bnesed[ií]\b|\bnesouhlas[ií]m\b/i.test(normalized)
+  );
+}
+
+function hasAllRequiredOnboardingPhases(coveredAreas: string[]): boolean {
+  return REQUIRED_ONBOARDING_PHASE_IDS.every((phaseId) =>
+    coveredAreas.includes(phaseId)
+  );
+}
+
+export const __onboardingTestUtils = {
+  mapLegacyPhaseToCurrent,
+  normalizeCoveredAreas,
+  getNextOnboardingPhase,
+  resolveCurrentOnboardingPhase,
+  isSummaryConfirmed,
+  hasAllRequiredOnboardingPhases,
+  ONBOARDING_REVIEW_PHASE,
+  ONBOARDING_PHASE_IDS,
+};
+
 async function handleOnboarding(
   userId: string,
   sessionId: string,
   transcript: string
 ): Promise<string> {
-  const history = await getConversationHistory(sessionId);
+  const [history, onboardingState] = await Promise.all([
+    getConversationHistory(sessionId),
+    getOnboardingState(userId),
+  ]);
 
-  // Phase index = number of AI responses so far (each user message triggers next phase)
-  // history includes the current user message we just saved
-  const aiResponseCount = history.filter((m) => m.role === "assistant").length;
-  const phaseIndex = Math.min(aiResponseCount, ONBOARDING_PHASES.length - 1);
-  const currentPhase = ONBOARDING_PHASES[phaseIndex];
-
-  // Detect interaction style from previous message if we're past that phase
-  const interactionStylePhaseIdx = ONBOARDING_PHASES.findIndex(
-    (p) => p.id === "interaction_style"
+  const coveredAreas = normalizeCoveredAreas(onboardingState.coveredAreas);
+  const currentPhaseId = resolveCurrentOnboardingPhase(
+    onboardingState.currentPhase,
+    coveredAreas
   );
-  if (aiResponseCount === interactionStylePhaseIdx + 1) {
-    const style = detectInteractionStyle(transcript);
-    if (style) {
-      await db
-        .update(schema.userProfile)
-        .set({ interactionStyle: style, updatedAt: new Date() })
-        .where(eq(schema.userProfile.userId, userId));
-    }
+
+  // If state says done but profile isn't complete yet, heal the inconsistency.
+  if (currentPhaseId === "done") {
+    await markOnboardingComplete(userId);
+    return "Onboarding je dokončený. Můžeme rovnou pokračovat konkrétně.";
   }
+
+  // Extra turn after summary: user confirms/corrects summary, then we switch to normal flow.
+  if (currentPhaseId === ONBOARDING_REVIEW_PHASE) {
+    const summaryConfirmed = isSummaryConfirmed(transcript);
+    const allRequiredCovered = hasAllRequiredOnboardingPhases(coveredAreas);
+    const existingDiagnosticData =
+      onboardingState.diagnosticData &&
+      typeof onboardingState.diagnosticData === "object"
+        ? (onboardingState.diagnosticData as Record<string, unknown>)
+        : {};
+
+    const diagnosticData = {
+      ...existingDiagnosticData,
+      summaryConfirmed,
+      summaryReviewInput: transcript,
+      summaryReviewedAt: new Date().toISOString(),
+    };
+
+    await db
+      .update(schema.onboardingState)
+      .set({
+        diagnosticData,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.onboardingState.userId, userId));
+
+    // Explicit confirmation preferred, but fallback completes onboarding
+    // if all required phases were already covered.
+    if (summaryConfirmed || allRequiredCovered) {
+      await markOnboardingComplete(userId);
+      return summaryConfirmed
+        ? "Perfektní, díky za potvrzení. Onboarding je hotový a jdeme rovnou na konkrétní kroky."
+        : "Díky za upřesnění. Onboarding je hotový a můžeme pokračovat konkrétně.";
+    }
+
+    return "Chápu. Co mám v mém shrnutí upravit, aby přesně sedělo?";
+  }
+
+  const currentPhase = ONBOARDING_PHASES.find((p) => p.id === currentPhaseId);
+  if (!currentPhase) {
+    await markOnboardingComplete(userId);
+    return "Onboarding je hotový. Můžeme pokračovat konkrétně.";
+  }
+
+  const phaseIndex = ONBOARDING_PHASE_IDS.indexOf(currentPhase.id);
 
   const systemPrompt = `Jsi AI terapeut a kouč. Mluvíš česky. Provádíš STRUKTUROVANOU úvodní diagnostiku.
 
@@ -251,22 +361,37 @@ GLOBÁLNÍ PRAVIDLA:
     temperature: 0.6,
   });
 
-  // Update onboarding state
+  const style = currentPhase.id === "interaction_style"
+    ? detectInteractionStyle(transcript)
+    : null;
+  if (style) {
+    await db
+      .update(schema.userProfile)
+      .set({ interactionStyle: style, updatedAt: new Date() })
+      .where(eq(schema.userProfile.userId, userId));
+  }
+
+  const nextPhase = getNextOnboardingPhase(currentPhase.id) ?? "done";
+  const updatedCovered = Array.from(new Set([...coveredAreas, currentPhase.id]));
+  const existingDiagnosticData =
+    onboardingState.diagnosticData &&
+    typeof onboardingState.diagnosticData === "object"
+      ? (onboardingState.diagnosticData as Record<string, unknown>)
+      : {};
+
   await db
     .update(schema.onboardingState)
     .set({
-      currentPhase: currentPhase.id,
-      coveredAreas: ONBOARDING_PHASES.slice(0, phaseIndex + 1).map(
-        (p) => p.id
-      ),
+      currentPhase: nextPhase,
+      coveredAreas: updatedCovered,
+      diagnosticData: {
+        ...existingDiagnosticData,
+        lastPhaseAsked: currentPhase.id,
+        lastPhaseAskedAt: new Date().toISOString(),
+      },
       updatedAt: new Date(),
     })
     .where(eq(schema.onboardingState.userId, userId));
-
-  // Complete onboarding after summary phase
-  if (currentPhase.id === "summary") {
-    await markOnboardingComplete(userId);
-  }
 
   return responseText;
 }

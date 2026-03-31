@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 
 export interface ChatMessage {
   id: string;
@@ -13,6 +13,10 @@ interface UseChatOptions {
   userId: string;
 }
 
+function getSessionStorageKey(userId: string) {
+  return `terapeut_session_id_${userId}`;
+}
+
 export function useChat({ userId }: UseChatOptions) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -21,6 +25,27 @@ export function useChat({ userId }: UseChatOptions) {
   const [currentMode, setCurrentMode] = useState<string>("mixed");
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const isMutedRef = useRef(false);
+
+  // Restore session when user changes/reloads app.
+  useEffect(() => {
+    if (!userId || typeof window === "undefined") return;
+    const persistedSessionId = localStorage.getItem(getSessionStorageKey(userId));
+    if (persistedSessionId) {
+      setSessionId(persistedSessionId);
+    } else {
+      setSessionId(null);
+    }
+  }, [userId]);
+
+  const persistSessionId = useCallback(
+    (nextSessionId: string) => {
+      setSessionId(nextSessionId);
+      if (userId && typeof window !== "undefined") {
+        localStorage.setItem(getSessionStorageKey(userId), nextSessionId);
+      }
+    },
+    [userId]
+  );
 
   const setMuted = useCallback((muted: boolean) => {
     isMutedRef.current = muted;
@@ -53,7 +78,9 @@ export function useChat({ userId }: UseChatOptions) {
           throw new Error(data.detail ?? data.error ?? "Chat request failed");
         }
 
-        if (!sessionId) setSessionId(data.sessionId);
+        if (data.sessionId && sessionId !== data.sessionId) {
+          persistSessionId(data.sessionId);
+        }
         setCurrentMode(data.mode);
 
         setMessages((prev) => [
@@ -86,7 +113,7 @@ export function useChat({ userId }: UseChatOptions) {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [userId, sessionId]
+    [userId, sessionId, persistSessionId]
   );
 
   const sendText = useCallback(
@@ -108,7 +135,9 @@ export function useChat({ userId }: UseChatOptions) {
           throw new Error(data.detail ?? data.error ?? "Chat request failed");
         }
 
-        if (!sessionId) setSessionId(data.sessionId);
+        if (data.sessionId && sessionId !== data.sessionId) {
+          persistSessionId(data.sessionId);
+        }
         setCurrentMode(data.mode);
 
         setMessages((prev) => [
@@ -141,7 +170,7 @@ export function useChat({ userId }: UseChatOptions) {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [userId, sessionId]
+    [userId, sessionId, persistSessionId]
   );
 
   const playTTS = useCallback(async (text: string) => {
@@ -171,6 +200,13 @@ export function useChat({ userId }: UseChatOptions) {
 
   const clearError = useCallback(() => setError(null), []);
 
+  const clearSession = useCallback(() => {
+    if (userId && typeof window !== "undefined") {
+      localStorage.removeItem(getSessionStorageKey(userId));
+    }
+    setSessionId(null);
+  }, [userId]);
+
   return {
     messages,
     isLoading,
@@ -181,5 +217,6 @@ export function useChat({ userId }: UseChatOptions) {
     sendText,
     setMuted,
     clearError,
+    clearSession,
   };
 }
