@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { handleChat } from "@/agents/orchestrator";
+import { after } from "next/server";
+import {
+  handleChat,
+  consumePendingJob,
+  processInsightJob,
+} from "@/agents/orchestrator";
 import { log, startTrace } from "@/lib/logger";
 
 export async function POST(request: NextRequest) {
@@ -33,7 +38,10 @@ export async function POST(request: NextRequest) {
     }
 
     if (!userId) {
-      return NextResponse.json({ error: "userId is required" }, { status: 400 });
+      return NextResponse.json(
+        { error: "userId is required" },
+        { status: 400 }
+      );
     }
 
     if (!text && !audioBuffer) {
@@ -50,6 +58,24 @@ export async function POST(request: NextRequest) {
       audioBuffer,
       audioFilename,
     });
+
+    // Run async agent pipeline AFTER response is sent to user.
+    // This uses Next.js after() -- the function runs in the same
+    // serverless invocation but after the response stream closes.
+    const pendingJob = consumePendingJob();
+    if (pendingJob) {
+      after(async () => {
+        try {
+          await processInsightJob(pendingJob);
+        } catch (error) {
+          log("error", "AsyncPipeline", "background_job_failed", {
+            data: {
+              error: error instanceof Error ? error.message : String(error),
+            },
+          });
+        }
+      });
+    }
 
     return NextResponse.json(result);
   } catch (error) {

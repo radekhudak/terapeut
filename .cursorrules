@@ -4,7 +4,7 @@
 - Next.js App Router + Vercel serverless
 - PostgreSQL (Neon) + Drizzle ORM + pgvector
 - OpenAI (GPT-4o, Whisper, TTS, Embeddings)
-- Redis (Upstash) + BullMQ pro async agent pipeline
+- Next.js `after()` pro async agent pipeline (zero infra)
 - shadcn/ui + Tailwind pro frontend
 
 ## Pravidla

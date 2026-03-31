@@ -11,7 +11,6 @@ import { diagnosticAgent } from "./diagnostic-agent";
 import { buildContext } from "@/context/builder";
 import { transcribeAudio, generateEmbedding } from "@/lib/openai";
 import { encrypt, decrypt } from "@/lib/crypto";
-import { insightQueue } from "@/lib/redis";
 import { log, startTrace } from "@/lib/logger";
 import type { ChatResponse, SessionMode } from "@/lib/types";
 
@@ -143,8 +142,8 @@ ${diagnosticResult.phase === "done" ? "Diagnostika je hotová. Shrň, co jsi zji
     responseText = conversationResult.response;
     mode = conversationResult.detectedMode;
 
-    // 8. Enqueue async agent jobs
-    await insightQueue.add("process", {
+    // 8. Schedule async agent pipeline (runs after response is sent via after())
+    scheduleAsyncPipeline({
       messageId,
       userId: input.userId,
       sessionId,
@@ -170,7 +169,33 @@ ${diagnosticResult.phase === "done" ? "Diagnostika je hotová. Shrň, co jsi zji
   };
 }
 
-// ── Async Agent Pipeline (runs via Redis worker) ───────────────────
+// ── Background job scheduling ──────────────────────────────────────
+
+let pendingJob: InsightJobData | null = null;
+
+export interface InsightJobData {
+  messageId: string;
+  userId: string;
+  sessionId: string;
+  content: string;
+  voiceSentiment?: string;
+}
+
+function scheduleAsyncPipeline(data: InsightJobData) {
+  pendingJob = data;
+}
+
+/**
+ * Returns the pending background job and clears it.
+ * Called by the API route to pass to `after()`.
+ */
+export function consumePendingJob(): InsightJobData | null {
+  const job = pendingJob;
+  pendingJob = null;
+  return job;
+}
+
+// ── Async Agent Pipeline (runs via after()) ────────────────────────
 
 export async function processInsightJob(data: {
   messageId: string;
