@@ -17,6 +17,9 @@ export async function POST(request: NextRequest) {
     let userId: string;
     let sessionId: string | undefined;
     let text: string | undefined;
+    let activeTopicId: string | undefined;
+    let mode: "normal" | "daily_routine" | undefined;
+    let routineId: string | undefined;
     let audioBuffer: Buffer | undefined;
     let audioFilename: string | undefined;
 
@@ -25,6 +28,12 @@ export async function POST(request: NextRequest) {
       userId = formData.get("userId") as string;
       sessionId = (formData.get("sessionId") as string) || undefined;
       text = (formData.get("text") as string) || undefined;
+      activeTopicId = (formData.get("activeTopicId") as string) || undefined;
+      mode = ((formData.get("mode") as string) || undefined) as
+        | "normal"
+        | "daily_routine"
+        | undefined;
+      routineId = (formData.get("routineId") as string) || undefined;
 
       const audioFile = formData.get("audio") as File | null;
       if (audioFile) {
@@ -37,6 +46,9 @@ export async function POST(request: NextRequest) {
       userId = body.userId;
       sessionId = body.sessionId;
       text = body.text;
+      activeTopicId = body.activeTopicId;
+      mode = body.mode;
+      routineId = body.routineId;
     }
 
     if (!userId) {
@@ -57,6 +69,9 @@ export async function POST(request: NextRequest) {
       userId,
       sessionId,
       text,
+      activeTopicId,
+      mode,
+      routineId,
       audioBuffer,
       audioFilename,
     });

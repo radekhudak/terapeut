@@ -10,6 +10,10 @@ import {
   HealthCoachAgentOutput,
   InteractionStyle,
   SessionMode,
+  CoachingTrackerAgentOutput,
+  DailyRoutineAgentOutput,
+  ChatRequestSchema,
+  ChatResponseSchema,
 } from "@/lib/types";
 
 describe("Zod schemas handle LLM outputs gracefully", () => {
@@ -281,6 +285,81 @@ describe("Zod schemas handle LLM outputs gracefully", () => {
       expect(SessionMode.parse("therapy")).toBe("therapy");
       expect(SessionMode.parse("coaching")).toBe("coaching");
       expect(SessionMode.parse("mixed")).toBe("mixed");
+    });
+  });
+
+  describe("New coaching schemas", () => {
+    it("parses CoachingTrackerAgentOutput with nullables", () => {
+      const result = CoachingTrackerAgentOutput.parse({
+        agreedTasks: [
+          {
+            title: "10 min procházka",
+            description: "Po obědě",
+            dueHint: null,
+            priority: "medium",
+            status: "todo",
+            progressPct: 0,
+            matchExistingTaskId: null,
+          },
+        ],
+        taskStatusUpdates: [],
+        topicUpdates: [],
+        detectedTopicTitle: null,
+      });
+      expect(result.agreedTasks[0].status).toBe("todo");
+      expect(result.detectedTopicTitle).toBeNull();
+    });
+
+    it("provides defaults for invalid tracker payload", () => {
+      const result = CoachingTrackerAgentOutput.parse({
+        agreedTasks: [{ title: "Task" }],
+      });
+      expect(Array.isArray(result.agreedTasks)).toBe(true);
+      expect(result.taskStatusUpdates).toEqual([]);
+      expect(result.topicUpdates).toEqual([]);
+    });
+
+    it("parses DailyRoutineAgentOutput", () => {
+      const result = DailyRoutineAgentOutput.parse({
+        questions: [
+          {
+            topicId: "550e8400-e29b-41d4-a716-446655440000",
+            question: "Co dnes uděláš pro zdraví?",
+            followUpHint: null,
+          },
+        ],
+        motivationalNote: "Jeden malý krok stačí.",
+      });
+      expect(result.questions).toHaveLength(1);
+    });
+
+    it("accepts activeTopicId in ChatRequestSchema", () => {
+      const parsed = ChatRequestSchema.parse({
+        text: "Ahoj",
+        sessionId: "550e8400-e29b-41d4-a716-446655440000",
+        activeTopicId: "550e8400-e29b-41d4-a716-446655440001",
+        mode: "daily_routine",
+        routineId: "550e8400-e29b-41d4-a716-446655440002",
+      });
+      expect(parsed.mode).toBe("daily_routine");
+    });
+
+    it("accepts coachingSummary in ChatResponseSchema", () => {
+      const parsed = ChatResponseSchema.parse({
+        transcript: "Ahoj",
+        responseText: "Ahoj",
+        mode: "mixed",
+        goalsUpdated: false,
+        sessionId: "550e8400-e29b-41d4-a716-446655440000",
+        coachingSummary: {
+          activeTasks: 2,
+          completedTasks: 1,
+          topicCount: 3,
+          activeTopicId: "550e8400-e29b-41d4-a716-446655440001",
+          activeTopicTitle: "Zdraví",
+        },
+      });
+      expect(parsed.coachingSummary?.topicCount).toBe(3);
     });
   });
 });

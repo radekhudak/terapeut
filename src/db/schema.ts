@@ -1,4 +1,5 @@
 import {
+  AnyPgColumn,
   pgTable,
   uuid,
   text,
@@ -9,6 +10,7 @@ import {
   jsonb,
   varchar,
   index,
+  uniqueIndex,
   vector,
 } from "drizzle-orm/pg-core";
 
@@ -105,6 +107,7 @@ export const feedbackLog = pgTable(
 export const interactionMetadata = pgTable("interaction_metadata", {
   id: uuid("id").defaultRandom().primaryKey(),
   messageId: uuid("message_id").references(() => messages.id),
+  topicId: uuid("topic_id"),
   userMoodDelta: real("user_mood_delta"),
   voiceSentiment: varchar("voice_sentiment", { length: 50 }),
   responseMode: varchar("response_mode", { length: 20 }), // therapy | coaching
@@ -229,3 +232,85 @@ export const onboardingState = pgTable("onboarding_state", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
+
+// ── Coaching Tasks ──────────────────────────────────────────────────
+export const coachingTasks = pgTable(
+  "coaching_tasks",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id").notNull(),
+    goalId: uuid("goal_id").references(() => goals.id),
+    sessionId: uuid("session_id").references(() => conversationSessions.id),
+    title: varchar("title", { length: 255 }).notNull(),
+    description: text("description"),
+    status: varchar("status", { length: 20 }).default("todo").notNull(), // todo | in_progress | done | skipped
+    priority: varchar("priority", { length: 20 }).default("medium").notNull(), // low | medium | high
+    progressPct: integer("progress_pct").default(0).notNull(),
+    dueDate: timestamp("due_date"),
+    sourceMessageId: uuid("source_message_id").references(() => messages.id),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("coaching_tasks_user_status_updated_idx").on(
+      table.userId,
+      table.status,
+      table.updatedAt
+    ),
+    index("coaching_tasks_goal_idx").on(table.goalId),
+  ]
+);
+
+// ── Topic Nodes ─────────────────────────────────────────────────────
+export const topicNodes = pgTable(
+  "topic_nodes",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id").notNull(),
+    parentId: uuid("parent_id").references((): AnyPgColumn => topicNodes.id),
+    title: varchar("title", { length: 255 }).notNull(),
+    progressPct: integer("progress_pct").default(0).notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [index("topic_nodes_user_parent_idx").on(table.userId, table.parentId)]
+);
+
+// ── Topic Notes ─────────────────────────────────────────────────────
+export const topicNotes = pgTable(
+  "topic_notes",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    topicId: uuid("topic_id")
+      .notNull()
+      .references(() => topicNodes.id),
+    userId: uuid("user_id").notNull(),
+    noteType: varchar("note_type", { length: 20 }).notNull(), // key_thought | milestone | user_note
+    contentEncrypted: text("content_encrypted").notNull(),
+    sourceMessageId: uuid("source_message_id").references(() => messages.id),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [index("topic_notes_topic_created_idx").on(table.topicId, table.createdAt)]
+);
+
+// ── Daily Routines ──────────────────────────────────────────────────
+export const dailyRoutines = pgTable(
+  "daily_routines",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id").notNull(),
+    routineDate: varchar("routine_date", { length: 10 }).notNull(), // YYYY-MM-DD in user's timezone
+    timezone: varchar("timezone", { length: 64 }).default("Europe/Prague").notNull(),
+    topicsCovered: jsonb("topics_covered").default([]).notNull(),
+    questions: jsonb("questions").default([]).notNull(),
+    completed: boolean("completed").default(false).notNull(),
+    completedAt: timestamp("completed_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("daily_routines_user_date_unique").on(
+      table.userId,
+      table.routineDate
+    ),
+  ]
+);

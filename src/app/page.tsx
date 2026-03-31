@@ -4,9 +4,16 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import { TalkButton } from "@/components/talk-button";
 import { ChatMessages } from "@/components/chat-messages";
 import { ModeIndicator } from "@/components/mode-indicator";
+import { CoachingTabs, type CoachingTab } from "@/components/coaching-tabs";
+import { CoachingTaskList } from "@/components/coaching-task-list";
+import { TopicTree } from "@/components/topic-tree";
+import { DailyRoutineBanner } from "@/components/daily-routine-banner";
 import { useAudioRecorder } from "@/hooks/use-audio-recorder";
 import { useChat } from "@/hooks/use-chat";
 import { useUser } from "@/hooks/use-user";
+import { useCoachingTasks } from "@/hooks/use-coaching-tasks";
+import { useTopicTree } from "@/hooks/use-topic-tree";
+import { useDailyRoutine } from "@/hooks/use-daily-routine";
 import {
   Volume2,
   VolumeX,
@@ -37,11 +44,19 @@ export default function Home() {
   const [newUsername, setNewUsername] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [newDisplayName, setNewDisplayName] = useState("");
+  const [activeTab, setActiveTab] = useState<CoachingTab>("chat");
+  const [activeTopicId, setActiveTopicId] = useState<string | null>(null);
+  const [newTaskTitle, setNewTaskTitle] = useState("");
+  const [newTopicTitle, setNewTopicTitle] = useState("");
+  const [dailyQuestionIndex, setDailyQuestionIndex] = useState(0);
   const sentBlobRef = useRef<Blob | null>(null);
   const onboardingStartedRef = useRef(false);
 
   const recorder = useAudioRecorder();
   const chat = useChat({ userId: user?.id ?? "" });
+  const tasks = useCoachingTasks(user?.id ?? "");
+  const topics = useTopicTree(user?.id ?? "");
+  const routine = useDailyRoutine(user?.id ?? "");
 
   // Sync mute state to chat hook
   useEffect(() => {
@@ -64,6 +79,15 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, userLoading]);
 
+  useEffect(() => {
+    if (!chat.coachingSummary) return;
+    tasks.refresh().catch(() => {});
+    topics.refresh().catch(() => {});
+    if (chat.coachingSummary.activeTopicId) {
+      setActiveTopicId(chat.coachingSummary.activeTopicId);
+    }
+  }, [chat.coachingSummary, tasks, topics]);
+
   const handleStartRecording = useCallback(async () => {
     if (!user) return;
     try {
@@ -83,8 +107,16 @@ export default function Home() {
   useEffect(() => {
     if (recorder.audioBlob && recorder.audioBlob !== sentBlobRef.current) {
       sentBlobRef.current = recorder.audioBlob;
+      const activeQuestion =
+        routine.routine && !routine.routine.completed
+          ? routine.routine.questions[dailyQuestionIndex]
+          : undefined;
       chat
-        .sendAudio(recorder.audioBlob)
+        .sendAudio(recorder.audioBlob, {
+          activeTopicId: activeQuestion?.topicId ?? activeTopicId ?? undefined,
+          mode: activeQuestion ? "daily_routine" : "normal",
+          routineId: activeQuestion ? routine.routine?.id : undefined,
+        })
         .catch(() => {})
         .finally(() => recorder.resetRecording());
     }
@@ -97,9 +129,25 @@ export default function Home() {
       if (!textInput.trim()) return;
       const text = textInput;
       setTextInput("");
-      await chat.sendText(text);
+      const activeQuestion =
+        routine.routine && !routine.routine.completed
+          ? routine.routine.questions[dailyQuestionIndex]
+          : undefined;
+      await chat.sendText(text, {
+        activeTopicId: activeQuestion?.topicId ?? activeTopicId ?? undefined,
+        mode: activeQuestion ? "daily_routine" : "normal",
+        routineId: activeQuestion ? routine.routine?.id : undefined,
+      });
+      if (activeQuestion && routine.routine) {
+        const nextIdx = dailyQuestionIndex + 1;
+        if (nextIdx >= routine.routine.questions.length) {
+          await routine.completeRoutine();
+        } else {
+          setDailyQuestionIndex(nextIdx);
+        }
+      }
     },
-    [textInput, chat]
+    [textInput, chat, routine, dailyQuestionIndex, activeTopicId]
   );
 
   const handleNewUser = useCallback(async () => {
@@ -140,6 +188,41 @@ export default function Home() {
     },
     [chat, createUser, newDisplayName, newPassword, newUsername]
   );
+
+  const handleSpeakTopic = useCallback(
+    async (topicId: string) => {
+      setActiveTopicId(topicId);
+      setActiveTab("chat");
+      await chat.sendText("Chci se vratit k tomuto tematu.", { activeTopicId: topicId });
+    },
+    [chat]
+  );
+
+  const handleCreateTask = useCallback(async () => {
+    if (!newTaskTitle.trim() || !user) return;
+    await tasks.createTask({ title: newTaskTitle.trim() });
+    setNewTaskTitle("");
+  }, [newTaskTitle, tasks, user]);
+
+  const handleCreateTopic = useCallback(async () => {
+    if (!newTopicTitle.trim() || !user) return;
+    await topics.createTopic(newTopicTitle.trim(), null);
+    setNewTopicTitle("");
+  }, [newTopicTitle, topics, user]);
+
+  const handleStartDailyRoutine = useCallback(async () => {
+    const created = await routine.startRoutine();
+    if (created && created.questions.length > 0) {
+      setDailyQuestionIndex(0);
+      setActiveTab("chat");
+      const first = created.questions[0];
+      await chat.sendText(first.question, {
+        activeTopicId: first.topicId,
+        mode: "daily_routine",
+        routineId: created.id,
+      });
+    }
+  }, [chat, routine]);
 
   if (userLoading) {
     return (
@@ -313,41 +396,103 @@ export default function Home() {
       ) : (
         <div className="px-4 py-2 border-b border-neutral-200 dark:border-neutral-800 text-xs text-neutral-600 dark:text-neutral-300">
           Režim: běžná konverzace (agenti aktivní)
+          {routine.routine && !routine.routine.completed
+            ? ` • Denní rutina otázka ${Math.min(dailyQuestionIndex + 1, routine.routine.questions.length)}/${routine.routine.questions.length}`
+            : ""}
         </div>
       )}
 
-      <ChatMessages messages={chat.messages} isLoading={chat.isLoading} />
+      <DailyRoutineBanner
+        visible={routine.needsRoutine}
+        isLoading={routine.isLoading}
+        onStart={handleStartDailyRoutine}
+      />
 
-      <div className="border-t border-neutral-200 dark:border-neutral-800 px-4 py-4 space-y-3">
-        {inputMode === "text" ? (
-          <form onSubmit={handleSendText} className="flex gap-2">
+      <div className="px-4 py-2 border-b border-neutral-200 dark:border-neutral-800">
+        <CoachingTabs activeTab={activeTab} onChange={setActiveTab} />
+      </div>
+
+      {activeTab === "chat" ? (
+        <ChatMessages messages={chat.messages} isLoading={chat.isLoading} />
+      ) : activeTab === "tasks" ? (
+        <div className="flex-1 overflow-y-auto p-4 space-y-3">
+          <div className="flex gap-2">
             <input
-              type="text"
-              value={textInput}
-              onChange={(e) => setTextInput(e.target.value)}
-              placeholder="Napiš odpověď..."
-              className="flex-1 rounded-xl border border-neutral-200 dark:border-neutral-700 bg-transparent px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-400 dark:focus:ring-neutral-600"
-              disabled={chat.isLoading}
-              autoFocus
+              value={newTaskTitle}
+              onChange={(e) => setNewTaskTitle(e.target.value)}
+              placeholder="Nový úkol..."
+              className="flex-1 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-transparent px-3 py-2 text-sm"
             />
             <button
-              type="submit"
-              disabled={!textInput.trim() || chat.isLoading}
-              className="px-4 py-2.5 rounded-xl bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 text-sm font-medium disabled:opacity-50 hover:opacity-90 transition-opacity"
+              onClick={handleCreateTask}
+              className="px-3 py-2 rounded-lg bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 text-sm"
             >
-              Odeslat
+              Přidat
             </button>
-          </form>
-        ) : (
-          <TalkButton
-            isRecording={recorder.isRecording}
-            isLoading={chat.isLoading}
-            duration={recorder.duration}
-            onStart={handleStartRecording}
-            onStop={handleStopRecording}
+          </div>
+          <CoachingTaskList
+            tasks={tasks.tasks}
+            onUpdate={async (taskId, patch) => {
+              await tasks.updateTask(taskId, patch);
+            }}
           />
-        )}
-      </div>
+        </div>
+      ) : (
+        <div className="flex-1 overflow-y-auto p-4 space-y-3">
+          <div className="flex gap-2">
+            <input
+              value={newTopicTitle}
+              onChange={(e) => setNewTopicTitle(e.target.value)}
+              placeholder="Nové téma..."
+              className="flex-1 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-transparent px-3 py-2 text-sm"
+            />
+            <button
+              onClick={handleCreateTopic}
+              className="px-3 py-2 rounded-lg bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 text-sm"
+            >
+              Přidat
+            </button>
+          </div>
+          <TopicTree
+            topics={topics.topics}
+            activeTopicId={activeTopicId}
+            onSpeakTopic={handleSpeakTopic}
+          />
+        </div>
+      )}
+
+      {activeTab === "chat" ? (
+        <div className="border-t border-neutral-200 dark:border-neutral-800 px-4 py-4 space-y-3">
+          {inputMode === "text" ? (
+            <form onSubmit={handleSendText} className="flex gap-2">
+              <input
+                type="text"
+                value={textInput}
+                onChange={(e) => setTextInput(e.target.value)}
+                placeholder="Napiš odpověď..."
+                className="flex-1 rounded-xl border border-neutral-200 dark:border-neutral-700 bg-transparent px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-400 dark:focus:ring-neutral-600"
+                disabled={chat.isLoading}
+                autoFocus
+              />
+              <button
+                type="submit"
+                disabled={!textInput.trim() || chat.isLoading}
+                className="px-4 py-2.5 rounded-xl bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 text-sm font-medium disabled:opacity-50 hover:opacity-90 transition-opacity"
+              >
+                Odeslat
+              </button>
+            </form>
+          ) : (
+            <TalkButton
+              isRecording={recorder.isRecording}
+              isLoading={chat.isLoading}
+              duration={recorder.duration}
+              onStart={handleStartRecording}
+              onStop={handleStopRecording}
+            />
+          )}
+        </div>
+      ) : null}
     </div>
   );
 }

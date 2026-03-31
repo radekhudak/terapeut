@@ -9,13 +9,16 @@ export async function buildContext(
   userId: string,
   sessionId: string,
   currentMessage: string,
-  voiceSentiment: string | null
+  voiceSentiment: string | null,
+  activeTopicId?: string
 ): Promise<ConversationContext> {
   const [
     shortTermMessages,
     profile,
     activeGoals,
     pendingActions,
+    coachingTasks,
+    topicTreeSummary,
     recentCheckIns,
     latestAssessment,
     healthTrends,
@@ -25,6 +28,8 @@ export async function buildContext(
     getUserProfile(userId),
     getActiveGoals(userId),
     getPendingActions(userId),
+    getActiveCoachingTasks(userId),
+    getTopicTreeSummary(userId),
     getRecentCheckIns(userId),
     getLatestAssessment(userId),
     getHealthTrends(userId),
@@ -32,6 +37,10 @@ export async function buildContext(
   ]);
 
   const milestones = await getGrowthMilestones(userId);
+  const activeTopic = await getActiveTopic(userId, activeTopicId);
+  const activeTopicNotes = activeTopic
+    ? await getActiveTopicNotes(activeTopic.id)
+    : [];
 
   const context: ConversationContext = {
     shortTerm: shortTermMessages,
@@ -45,6 +54,12 @@ export async function buildContext(
       (a) =>
         `${a.stepDescription}${a.dueDate ? ` (do ${a.dueDate.toLocaleDateString("cs")})` : ""}`
     ),
+    coachingTasks: coachingTasks.map(
+      (task) => `${task.title} [${task.status}] (${task.progressPct}%)`
+    ),
+    topicTree: topicTreeSummary,
+    activeTopicNotes,
+    activeTopicTitle: activeTopic?.title ?? null,
     voiceSentiment,
     sessionMode: (profile?.coachingPreferences as Record<string, unknown>)
       ?.preferredMode as SessionMode ?? "mixed",
@@ -61,6 +76,8 @@ export async function buildContext(
       shortTermCount: context.shortTerm.length,
       longTermCount: context.longTermRelevant.length,
       goalsCount: context.activeGoals.length,
+      coachingTasksCount: context.coachingTasks.length,
+      activeTopic: context.activeTopicTitle,
     },
   });
 
@@ -101,19 +118,97 @@ async function getActiveGoals(userId: string) {
 async function getPendingActions(userId: string) {
   return db
     .select({
-      stepDescription: schema.actionPlans.stepDescription,
-      dueDate: schema.actionPlans.dueDate,
+      stepDescription: schema.coachingTasks.title,
+      dueDate: schema.coachingTasks.dueDate,
     })
-    .from(schema.actionPlans)
-    .innerJoin(schema.goals, eq(schema.actionPlans.goalId, schema.goals.id))
+    .from(schema.coachingTasks)
     .where(
       and(
-        eq(schema.goals.userId, userId),
-        eq(schema.actionPlans.completed, false)
+        eq(schema.coachingTasks.userId, userId),
+        eq(schema.coachingTasks.status, "todo")
       )
     )
-    .orderBy(schema.actionPlans.dueDate)
+    .orderBy(schema.coachingTasks.dueDate)
     .limit(5);
+}
+
+async function getActiveCoachingTasks(userId: string) {
+  return db
+    .select({
+      title: schema.coachingTasks.title,
+      status: schema.coachingTasks.status,
+      progressPct: schema.coachingTasks.progressPct,
+    })
+    .from(schema.coachingTasks)
+    .where(
+      and(
+        eq(schema.coachingTasks.userId, userId),
+        sql`${schema.coachingTasks.status} IN ('todo', 'in_progress')`
+      )
+    )
+    .orderBy(desc(schema.coachingTasks.updatedAt))
+    .limit(8);
+}
+
+async function getTopicTreeSummary(userId: string): Promise<string[]> {
+  const rows = await db
+    .select({
+      id: schema.topicNodes.id,
+      parentId: schema.topicNodes.parentId,
+      title: schema.topicNodes.title,
+      progressPct: schema.topicNodes.progressPct,
+    })
+    .from(schema.topicNodes)
+    .where(eq(schema.topicNodes.userId, userId))
+    .orderBy(schema.topicNodes.createdAt);
+
+  if (rows.length === 0) return [];
+
+  const titles = new Map(rows.map((r) => [r.id, r.title]));
+  return rows.map((r) => {
+    const parentTitle = r.parentId ? titles.get(r.parentId) : null;
+    return parentTitle
+      ? `${parentTitle} > ${r.title} (${r.progressPct}%)`
+      : `${r.title} (${r.progressPct}%)`;
+  });
+}
+
+async function getActiveTopic(userId: string, activeTopicId?: string) {
+  if (!activeTopicId) return null;
+  const rows = await db
+    .select({
+      id: schema.topicNodes.id,
+      title: schema.topicNodes.title,
+    })
+    .from(schema.topicNodes)
+    .where(
+      and(
+        eq(schema.topicNodes.id, activeTopicId),
+        eq(schema.topicNodes.userId, userId)
+      )
+    )
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+async function getActiveTopicNotes(topicId: string): Promise<string[]> {
+  const rows = await db
+    .select({
+      contentEncrypted: schema.topicNotes.contentEncrypted,
+      noteType: schema.topicNotes.noteType,
+    })
+    .from(schema.topicNotes)
+    .where(eq(schema.topicNotes.topicId, topicId))
+    .orderBy(desc(schema.topicNotes.createdAt))
+    .limit(5);
+
+  return rows.map((row) => {
+    try {
+      return `[${row.noteType}] ${decrypt(row.contentEncrypted)}`;
+    } catch {
+      return `[${row.noteType}] [encrypted]`;
+    }
+  });
 }
 
 async function getRecentCheckIns(userId: string): Promise<string | null> {

@@ -34,6 +34,17 @@ export const GoalStatus = z.enum([
 ]);
 export type GoalStatus = z.infer<typeof GoalStatus>;
 
+export const CoachingTaskStatus = z.enum([
+  "todo",
+  "in_progress",
+  "done",
+  "skipped",
+]);
+export type CoachingTaskStatus = z.infer<typeof CoachingTaskStatus>;
+
+export const CoachingTaskPriority = z.enum(["low", "medium", "high"]);
+export type CoachingTaskPriority = z.infer<typeof CoachingTaskPriority>;
+
 // ── Feedback Type ──────────────────────────────────────────────────
 export const FeedbackType = z.enum(["positive", "negative", "correction"]);
 export type FeedbackType = z.infer<typeof FeedbackType>;
@@ -172,6 +183,59 @@ export const HealthCoachAgentOutput = z.object({
 });
 export type HealthCoachAgentOutput = z.infer<typeof HealthCoachAgentOutput>;
 
+export const CoachingTrackerAgentOutput = z.object({
+  agreedTasks: z
+    .array(
+      z.object({
+        title: z.string().catch("Nový úkol"),
+        description: z.string().catch(""),
+        dueHint: z.string().nullish(),
+        priority: CoachingTaskPriority.catch("medium"),
+        status: CoachingTaskStatus.catch("todo"),
+        progressPct: z.number().min(0).max(100).catch(0),
+        matchExistingTaskId: z.string().uuid().nullish(),
+      })
+    )
+    .catch([]),
+  taskStatusUpdates: z
+    .array(
+      z.object({
+        taskId: z.string().uuid(),
+        newStatus: CoachingTaskStatus.catch("in_progress"),
+        progressPct: z.number().min(0).max(100).catch(0),
+      })
+    )
+    .catch([]),
+  topicUpdates: z
+    .array(
+      z.object({
+        topicTitle: z.string(),
+        parentTitle: z.string().nullish(),
+        progressDelta: z.number().min(-100).max(100).catch(0),
+        keyThoughts: z.array(z.string()).catch([]),
+      })
+    )
+    .catch([]),
+  detectedTopicTitle: z.string().nullish(),
+});
+export type CoachingTrackerAgentOutput = z.infer<
+  typeof CoachingTrackerAgentOutput
+>;
+
+export const DailyRoutineAgentOutput = z.object({
+  questions: z
+    .array(
+      z.object({
+        topicId: z.string().uuid(),
+        question: z.string(),
+        followUpHint: z.string().nullish(),
+      })
+    )
+    .catch([]),
+  motivationalNote: z.string().catch("Držím ti palce, pokračuj krok za krokem."),
+});
+export type DailyRoutineAgentOutput = z.infer<typeof DailyRoutineAgentOutput>;
+
 // ── Context Builder ────────────────────────────────────────────────
 export interface ConversationContext {
   shortTerm: string[];
@@ -186,12 +250,19 @@ export interface ConversationContext {
   healthTrends: string | null;
   assessmentBaseline: string | null;
   recentCheckins: string | null;
+  coachingTasks: string[];
+  topicTree: string[];
+  activeTopicNotes: string[];
+  activeTopicTitle: string | null;
 }
 
 // ── Chat API ───────────────────────────────────────────────────────
 export const ChatRequestSchema = z.object({
   text: z.string().optional(),
   sessionId: z.string().uuid().optional(),
+  activeTopicId: z.string().uuid().optional(),
+  mode: z.enum(["normal", "daily_routine"]).optional(),
+  routineId: z.string().uuid().optional(),
 });
 
 export const ChatResponseSchema = z.object({
@@ -208,6 +279,15 @@ export const ChatResponseSchema = z.object({
       totalSteps: z.number().int().min(1),
       stepId: z.string(),
       stepLabel: z.string(),
+    })
+    .optional(),
+  coachingSummary: z
+    .object({
+      activeTasks: z.number().int().min(0),
+      completedTasks: z.number().int().min(0),
+      topicCount: z.number().int().min(0),
+      activeTopicId: z.string().uuid().nullish(),
+      activeTopicTitle: z.string().nullish(),
     })
     .optional(),
 });

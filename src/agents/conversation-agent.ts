@@ -178,6 +178,18 @@ function buildContextSummary(ctx: ConversationContext): string {
   if (ctx.pendingActions.length > 0) {
     parts.push(`Nesplněné kroky:\n${ctx.pendingActions.join("\n")}`);
   }
+  if (ctx.coachingTasks.length > 0) {
+    parts.push(`Domluvené coaching úkoly:\n${ctx.coachingTasks.join("\n")}`);
+  }
+  if (ctx.topicTree.length > 0) {
+    parts.push(`Strom témat:\n${ctx.topicTree.join("\n")}`);
+  }
+  if (ctx.activeTopicTitle) {
+    parts.push(`Aktivní téma: ${ctx.activeTopicTitle}`);
+  }
+  if (ctx.activeTopicNotes.length > 0) {
+    parts.push(`Poznámky k aktivnímu tématu:\n${ctx.activeTopicNotes.join("\n")}`);
+  }
   if (ctx.growthMilestones.length > 0) {
     parts.push(`Pokroky:\n${ctx.growthMilestones.join("\n")}`);
   }

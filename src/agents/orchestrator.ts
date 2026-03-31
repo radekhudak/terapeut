@@ -7,11 +7,16 @@ import { learningAgent, shouldRunSynthesis } from "./learning-agent";
 import { insightAgent } from "./insight-agent";
 import { goalAgent } from "./goal-agent";
 import { healthCoachAgent } from "./health-coach-agent";
+import { coachingTrackerAgent } from "./coaching-tracker-agent";
 import { buildContext } from "@/context/builder";
 import { transcribeAudio, generateEmbedding, chatCompletion } from "@/lib/openai";
 import { encrypt, decrypt } from "@/lib/crypto";
 import { log, startTrace } from "@/lib/logger";
-import type { ChatResponse, SessionMode } from "@/lib/types";
+import type {
+  ChatResponse,
+  CoachingTrackerAgentOutput,
+  SessionMode,
+} from "@/lib/types";
 
 export interface ChatInput {
   userId: string;
@@ -19,6 +24,9 @@ export interface ChatInput {
   text?: string;
   audioBuffer?: Buffer;
   audioFilename?: string;
+  activeTopicId?: string;
+  mode?: "normal" | "daily_routine";
+  routineId?: string;
 }
 
 export async function handleChat(input: ChatInput): Promise<ChatResponse> {
@@ -59,6 +67,13 @@ export async function handleChat(input: ChatInput): Promise<ChatResponse> {
   // 2. Get or create session
   const sessionId = input.sessionId ?? (await createSession(input.userId));
 
+  if (input.activeTopicId) {
+    const ownsTopic = await userOwnsTopic(input.userId, input.activeTopicId);
+    if (!ownsTopic) {
+      throw new Error("Invalid activeTopicId for this user");
+    }
+  }
+
   // 3. Check onboarding status
   const profile = await getOrCreateProfile(input.userId);
   const isOnboarding = !profile.onboardingCompleted;
@@ -78,6 +93,7 @@ export async function handleChat(input: ChatInput): Promise<ChatResponse> {
   let mode: SessionMode = "mixed";
   const goalsUpdated = false;
   let onboardingProgress: ChatResponse["onboardingProgress"];
+  let coachingSummary: ChatResponse["coachingSummary"];
 
   if (isOnboarding) {
     responseText = await handleOnboarding(
@@ -93,10 +109,12 @@ export async function handleChat(input: ChatInput): Promise<ChatResponse> {
       sessionId,
       messageId,
       transcript,
-      profile
+      profile,
+      input.activeTopicId
     );
     responseText = result.responseText;
     mode = result.mode;
+    coachingSummary = result.coachingSummary;
   }
 
   // 9. Save assistant message
@@ -114,6 +132,7 @@ export async function handleChat(input: ChatInput): Promise<ChatResponse> {
     goalsUpdated,
     sessionId,
     onboardingProgress,
+    coachingSummary,
   };
 }
 
@@ -407,6 +426,11 @@ GLOBÁLNÍ PRAVIDLA:
     typeof onboardingState.diagnosticData === "object"
       ? (onboardingState.diagnosticData as Record<string, unknown>)
       : {};
+  const previousPhaseAnswers =
+    existingDiagnosticData.phaseAnswers &&
+    typeof existingDiagnosticData.phaseAnswers === "object"
+      ? (existingDiagnosticData.phaseAnswers as Record<string, unknown>)
+      : {};
 
   await db
     .update(schema.onboardingState)
@@ -415,6 +439,10 @@ GLOBÁLNÍ PRAVIDLA:
       coveredAreas: updatedCovered,
       diagnosticData: {
         ...existingDiagnosticData,
+        phaseAnswers: {
+          ...previousPhaseAnswers,
+          [currentPhase.id]: transcript,
+        },
         lastPhaseAsked: currentPhase.id,
         lastPhaseAskedAt: new Date().toISOString(),
       },
@@ -445,13 +473,26 @@ async function handleNormalChat(
   sessionId: string,
   messageId: string,
   transcript: string,
-  profile: Awaited<ReturnType<typeof getOrCreateProfile>>
-): Promise<{ responseText: string; mode: SessionMode }> {
+  profile: Awaited<ReturnType<typeof getOrCreateProfile>>,
+  activeTopicId?: string
+): Promise<{
+  responseText: string;
+  mode: SessionMode;
+  coachingSummary: ChatResponse["coachingSummary"];
+}> {
   const voiceSentiment: string | null = null;
+  const resolvedActiveTopicId =
+    activeTopicId ?? (await getLastActiveTopicId(userId, sessionId));
 
   let context;
   try {
-    context = await buildContext(userId, sessionId, transcript, voiceSentiment);
+    context = await buildContext(
+      userId,
+      sessionId,
+      transcript,
+      voiceSentiment,
+      resolvedActiveTopicId ?? undefined
+    );
   } catch (error) {
     log("warn", "Orchestrator", "context_build_failed", {
       data: { error: error instanceof Error ? error.message : String(error) },
@@ -464,6 +505,10 @@ async function handleNormalChat(
       growthMilestones: [],
       activeGoals: [],
       pendingActions: [],
+      coachingTasks: [],
+      topicTree: [],
+      activeTopicNotes: [],
+      activeTopicTitle: null,
       voiceSentiment: null,
       sessionMode: "mixed" as SessionMode,
       interactionStyle: (profile.interactionStyle ?? "adaptive") as
@@ -516,12 +561,20 @@ async function handleNormalChat(
     userId,
     sessionId,
     content: transcript,
+    assistantResponse: conversationResult.response,
+    activeTopicId: resolvedActiveTopicId ?? undefined,
     voiceSentiment: voiceSentiment ?? undefined,
   });
+
+  const coachingSummary = await getCoachingSummary(
+    userId,
+    resolvedActiveTopicId ?? undefined
+  );
 
   return {
     responseText: conversationResult.response,
     mode: conversationResult.detectedMode,
+    coachingSummary,
   };
 }
 
@@ -534,6 +587,8 @@ export interface InsightJobData {
   userId: string;
   sessionId: string;
   content: string;
+  assistantResponse: string;
+  activeTopicId?: string;
   voiceSentiment?: string;
 }
 
@@ -554,6 +609,8 @@ export async function processInsightJob(data: {
   userId: string;
   sessionId: string;
   content: string;
+  assistantResponse: string;
+  activeTopicId?: string;
   voiceSentiment?: string;
 }) {
   startTrace();
@@ -658,13 +715,77 @@ export async function processInsightJob(data: {
 
       if (inserted) {
         for (const step of goal.suggestedSteps) {
-          await db.insert(schema.actionPlans).values({
+          await db.insert(schema.coachingTasks).values({
+            userId: data.userId,
             goalId: inserted.id,
-            stepDescription: step,
+            sessionId: data.sessionId,
+            title: step.slice(0, 255),
+            description: step,
+            status: "todo",
+            priority: "medium",
+            progressPct: 0,
+            sourceMessageId: data.messageId,
           });
         }
       }
     }
+
+    // Coaching Tracker Agent
+    let trackingResult: CoachingTrackerAgentOutput = {
+      agreedTasks: [],
+      taskStatusUpdates: [],
+      topicUpdates: [],
+      detectedTopicTitle: null,
+    };
+    try {
+      const activeTasks = await db
+        .select({
+          id: schema.coachingTasks.id,
+          title: schema.coachingTasks.title,
+          description: schema.coachingTasks.description,
+          status: schema.coachingTasks.status,
+        })
+        .from(schema.coachingTasks)
+        .where(eq(schema.coachingTasks.userId, data.userId))
+        .orderBy(schema.coachingTasks.updatedAt)
+        .limit(20);
+
+      const activeGoals = await db
+        .select({
+          id: schema.goals.id,
+          title: schema.goals.title,
+          area: schema.goals.area,
+        })
+        .from(schema.goals)
+        .where(eq(schema.goals.userId, data.userId))
+        .limit(20);
+
+      trackingResult = await coachingTrackerAgent.run(
+        [
+          {
+            role: "user",
+            content: `Uživatel napsal: ${data.content}\nAsistent odpověděl: ${data.assistantResponse}`,
+          },
+        ],
+        {
+          activeGoals,
+          activeTasks,
+          activeTopicId: data.activeTopicId,
+        }
+      );
+    } catch (error) {
+      log("warn", "Orchestrator", "coaching_tracker_failed", {
+        userId: data.userId,
+        data: { error: error instanceof Error ? error.message : String(error) },
+      });
+    }
+
+    const trackerStats = await applyCoachingTrackerUpdates(
+      data.userId,
+      data.sessionId,
+      data.messageId,
+      trackingResult
+    );
 
     // Health Coach Agent
     const healthResult = await healthCoachAgent.run(
@@ -681,12 +802,18 @@ export async function processInsightJob(data: {
 
     await db.insert(schema.interactionMetadata).values({
       messageId: data.messageId,
+      topicId: trackerStats.topicId ?? data.activeTopicId,
       voiceSentiment: data.voiceSentiment,
       responseMode: "mixed",
     });
 
     log("info", "Orchestrator", "async_pipeline_completed", {
       userId: data.userId,
+      data: {
+        tasksCreated: trackerStats.tasksCreated,
+        tasksUpdated: trackerStats.tasksUpdated,
+        topicsUpdated: trackerStats.topicsUpdated,
+      },
     });
   } catch (error) {
     log("error", "Orchestrator", "async_pipeline_error", {
@@ -793,6 +920,14 @@ async function getOnboardingState(userId: string) {
 }
 
 async function markOnboardingComplete(userId: string) {
+  const [state] = await db
+    .select({
+      diagnosticData: schema.onboardingState.diagnosticData,
+    })
+    .from(schema.onboardingState)
+    .where(eq(schema.onboardingState.userId, userId))
+    .limit(1);
+
   await db
     .update(schema.userProfile)
     .set({
@@ -806,6 +941,8 @@ async function markOnboardingComplete(userId: string) {
     .set({ currentPhase: "done", updatedAt: new Date() })
     .where(eq(schema.onboardingState.userId, userId));
 
+  await seedTopicsFromOnboarding(userId, state?.diagnosticData);
+
   log("info", "Orchestrator", "onboarding_completed", { userId });
 }
 
@@ -815,6 +952,358 @@ async function getMessageCount(userId: string): Promise<number> {
     .from(schema.messages)
     .where(eq(schema.messages.userId, userId));
   return Number(result[0]?.count ?? 0);
+}
+
+async function userOwnsTopic(userId: string, topicId: string): Promise<boolean> {
+  const rows = await db
+    .select({ id: schema.topicNodes.id })
+    .from(schema.topicNodes)
+    .where(
+      sql`${schema.topicNodes.id} = ${topicId}
+          AND ${schema.topicNodes.userId} = ${userId}`
+    )
+    .limit(1);
+  return !!rows[0];
+}
+
+async function getLastActiveTopicId(
+  userId: string,
+  sessionId: string
+): Promise<string | null> {
+  const rows = await db
+    .select({ topicId: schema.interactionMetadata.topicId })
+    .from(schema.interactionMetadata)
+    .innerJoin(
+      schema.messages,
+      eq(schema.interactionMetadata.messageId, schema.messages.id)
+    )
+    .where(
+      sql`${schema.messages.userId} = ${userId}
+          AND ${schema.messages.sessionId} = ${sessionId}
+          AND ${schema.interactionMetadata.topicId} IS NOT NULL`
+    )
+    .orderBy(sql`${schema.interactionMetadata.createdAt} DESC`)
+    .limit(1);
+  return rows[0]?.topicId ?? null;
+}
+
+async function applyCoachingTrackerUpdates(
+  userId: string,
+  sessionId: string,
+  messageId: string,
+  tracking: CoachingTrackerAgentOutput
+): Promise<{
+  tasksCreated: number;
+  tasksUpdated: number;
+  topicsUpdated: number;
+  topicId: string | null;
+}> {
+  let tasksCreated = 0;
+  let tasksUpdated = 0;
+  let topicsUpdated = 0;
+  let resolvedTopicId: string | null = null;
+
+  for (const update of tracking.taskStatusUpdates) {
+    const [existing] = await db
+      .select({
+        id: schema.coachingTasks.id,
+      })
+      .from(schema.coachingTasks)
+      .where(
+        sql`${schema.coachingTasks.id} = ${update.taskId}
+            AND ${schema.coachingTasks.userId} = ${userId}`
+      )
+      .limit(1);
+    if (!existing) continue;
+
+    await db
+      .update(schema.coachingTasks)
+      .set({
+        status: update.newStatus,
+        progressPct: update.progressPct,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.coachingTasks.id, existing.id));
+    tasksUpdated += 1;
+  }
+
+  for (const task of tracking.agreedTasks) {
+    const existingId = task.matchExistingTaskId ?? null;
+    if (existingId) {
+      const [existing] = await db
+        .select({ id: schema.coachingTasks.id })
+        .from(schema.coachingTasks)
+        .where(
+          sql`${schema.coachingTasks.id} = ${existingId}
+              AND ${schema.coachingTasks.userId} = ${userId}`
+        )
+        .limit(1);
+      if (existing) {
+        await db
+          .update(schema.coachingTasks)
+          .set({
+            description: task.description || null,
+            status: task.status,
+            priority: task.priority,
+            progressPct: task.progressPct,
+            dueDate: parseDueHint(task.dueHint ?? undefined),
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.coachingTasks.id, existing.id));
+        tasksUpdated += 1;
+        continue;
+      }
+    }
+
+    const [dup] = await db
+      .select({ id: schema.coachingTasks.id })
+      .from(schema.coachingTasks)
+      .where(
+        sql`${schema.coachingTasks.userId} = ${userId}
+            AND lower(${schema.coachingTasks.title}) = lower(${task.title})`
+      )
+      .limit(1);
+    if (dup) continue;
+
+    await db.insert(schema.coachingTasks).values({
+      userId,
+      sessionId,
+      title: task.title.slice(0, 255),
+      description: task.description || null,
+      status: task.status,
+      priority: task.priority,
+      progressPct: task.progressPct,
+      dueDate: parseDueHint(task.dueHint ?? undefined),
+      sourceMessageId: messageId,
+      updatedAt: new Date(),
+    });
+    tasksCreated += 1;
+  }
+
+  for (const topicUpdate of tracking.topicUpdates) {
+    const topicId = await ensureTopicNode(
+      userId,
+      topicUpdate.topicTitle,
+      topicUpdate.parentTitle ?? null
+    );
+    resolvedTopicId = topicId;
+    if (topicId) {
+      await db
+        .update(schema.topicNodes)
+        .set({
+          progressPct: sql`GREATEST(0, LEAST(100, ${schema.topicNodes.progressPct} + ${Math.round(
+            topicUpdate.progressDelta
+          )}))`,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.topicNodes.id, topicId));
+      topicsUpdated += 1;
+    }
+
+    for (const thought of topicUpdate.keyThoughts) {
+      if (!thought.trim() || !topicId) continue;
+      await db.insert(schema.topicNotes).values({
+        topicId,
+        userId,
+        noteType: "key_thought",
+        contentEncrypted: encrypt(thought),
+        sourceMessageId: messageId,
+      });
+    }
+  }
+
+  if (!resolvedTopicId && tracking.detectedTopicTitle) {
+    resolvedTopicId = await ensureTopicNode(userId, tracking.detectedTopicTitle, null);
+  }
+
+  return {
+    tasksCreated,
+    tasksUpdated,
+    topicsUpdated,
+    topicId: resolvedTopicId,
+  };
+}
+
+async function ensureTopicNode(
+  userId: string,
+  title: string,
+  parentTitle: string | null
+): Promise<string | null> {
+  if (!title.trim()) return null;
+
+  let parentId: string | null = null;
+  if (parentTitle?.trim()) {
+    const [parent] = await db
+      .select({ id: schema.topicNodes.id })
+      .from(schema.topicNodes)
+      .where(
+        sql`${schema.topicNodes.userId} = ${userId}
+            AND lower(${schema.topicNodes.title}) = lower(${parentTitle})`
+      )
+      .limit(1);
+    parentId = parent?.id ?? null;
+    if (!parentId) {
+      const [createdParent] = await db
+        .insert(schema.topicNodes)
+        .values({
+          userId,
+          title: parentTitle,
+          progressPct: 0,
+        })
+        .returning({ id: schema.topicNodes.id });
+      parentId = createdParent?.id ?? null;
+    }
+  }
+
+  const [existing] = await db
+    .select({ id: schema.topicNodes.id })
+    .from(schema.topicNodes)
+    .where(
+      sql`${schema.topicNodes.userId} = ${userId}
+          AND lower(${schema.topicNodes.title}) = lower(${title})
+          AND ${schema.topicNodes.parentId} IS NOT DISTINCT FROM ${parentId}`
+    )
+    .limit(1);
+  if (existing) return existing.id;
+
+  const [created] = await db
+    .insert(schema.topicNodes)
+    .values({
+      userId,
+      parentId,
+      title,
+      progressPct: 0,
+    })
+    .returning({ id: schema.topicNodes.id });
+  return created?.id ?? null;
+}
+
+function parseDueHint(dueHint?: string): Date | null {
+  if (!dueHint) return null;
+  const trimmed = dueHint.trim();
+  if (!trimmed) return null;
+  const parsed = new Date(trimmed);
+  if (!Number.isNaN(parsed.getTime())) return parsed;
+
+  if (/dnes/i.test(trimmed)) return new Date();
+  if (/zítra|zitra/i.test(trimmed)) {
+    const d = new Date();
+    d.setDate(d.getDate() + 1);
+    return d;
+  }
+  if (/týden|tyden/i.test(trimmed)) {
+    const d = new Date();
+    d.setDate(d.getDate() + 7);
+    return d;
+  }
+  return null;
+}
+
+async function getCoachingSummary(userId: string, activeTopicId?: string) {
+  const [activeTasks, completedTasks, topicCount] = await Promise.all([
+    db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.coachingTasks)
+      .where(
+        sql`${schema.coachingTasks.userId} = ${userId}
+            AND ${schema.coachingTasks.status} IN ('todo', 'in_progress')`
+      ),
+    db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.coachingTasks)
+      .where(
+        sql`${schema.coachingTasks.userId} = ${userId}
+            AND ${schema.coachingTasks.status} = 'done'`
+      ),
+    db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.topicNodes)
+      .where(eq(schema.topicNodes.userId, userId)),
+  ]);
+
+  let activeTopicTitle: string | null = null;
+  if (activeTopicId) {
+    const rows = await db
+      .select({ title: schema.topicNodes.title })
+      .from(schema.topicNodes)
+      .where(
+        sql`${schema.topicNodes.id} = ${activeTopicId}
+            AND ${schema.topicNodes.userId} = ${userId}`
+      )
+      .limit(1);
+    activeTopicTitle = rows[0]?.title ?? null;
+  }
+
+  return {
+    activeTasks: Number(activeTasks[0]?.count ?? 0),
+    completedTasks: Number(completedTasks[0]?.count ?? 0),
+    topicCount: Number(topicCount[0]?.count ?? 0),
+    activeTopicId: activeTopicId ?? null,
+    activeTopicTitle,
+  };
+}
+
+async function seedTopicsFromOnboarding(
+  userId: string,
+  diagnosticData: unknown
+): Promise<void> {
+  const parsed =
+    diagnosticData && typeof diagnosticData === "object"
+      ? (diagnosticData as Record<string, unknown>)
+      : {};
+  const phaseAnswers =
+    parsed.phaseAnswers && typeof parsed.phaseAnswers === "object"
+      ? (parsed.phaseAnswers as Record<string, unknown>)
+      : {};
+  const areasRaw = String(phaseAnswers.areas_rating ?? "");
+
+  const topicSeeds = inferLowScoreTopics(areasRaw);
+  if (topicSeeds.length === 0) return;
+
+  const existing = await db
+    .select({ title: schema.topicNodes.title })
+    .from(schema.topicNodes)
+    .where(
+      sql`${schema.topicNodes.userId} = ${userId}
+          AND ${schema.topicNodes.parentId} IS NULL`
+    );
+  const existingTitles = new Set(existing.map((t) => t.title.toLowerCase()));
+
+  for (const title of topicSeeds) {
+    if (existingTitles.has(title.toLowerCase())) continue;
+    await db.insert(schema.topicNodes).values({
+      userId,
+      title,
+      progressPct: 0,
+    });
+  }
+}
+
+function inferLowScoreTopics(areasInput: string): string[] {
+  if (!areasInput.trim()) return [];
+  const topics: string[] = [];
+  const normalized = areasInput.toLowerCase();
+  const pairs: Array<{ label: string; regex: RegExp }> = [
+    { label: "Práce / kariéra", regex: /pr[áa]ce|kari[ée]ra/ },
+    { label: "Vztahy", regex: /vztahy|partner|rodina|p[řr][áa]tel/ },
+    { label: "Zdraví", regex: /zdrav[íi]|sp[áa]nek|energie|psych/ },
+    { label: "Finance", regex: /finance|pen[ěe]z/ },
+    { label: "Osobní růst", regex: /r[ůu]st|smyslupl/ },
+    { label: "Volný čas", regex: /voln[ýy]\s+[čc]as|z[áa]bava/ },
+  ];
+
+  for (const { label, regex } of pairs) {
+    const scoreMatch = normalized.match(
+      new RegExp(`${regex.source}[^\\d]{0,25}(\\d{1,2})`, "i")
+    );
+    const score = scoreMatch ? Number(scoreMatch[1]) : null;
+    if (score !== null && score <= 5) topics.push(label);
+  }
+
+  if (topics.length === 0) {
+    return ["Práce / kariéra", "Vztahy", "Zdraví"];
+  }
+  return topics.slice(0, 4);
 }
 
 async function applyProfileUpdates(

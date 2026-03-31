@@ -21,6 +21,12 @@ interface UseChatOptions {
   userId: string;
 }
 
+interface SendOptions {
+  activeTopicId?: string;
+  mode?: "normal" | "daily_routine";
+  routineId?: string;
+}
+
 function getSessionStorageKey(userId: string) {
   return `terapeut_session_id_${userId}`;
 }
@@ -33,6 +39,13 @@ export function useChat({ userId }: UseChatOptions) {
   const [currentMode, setCurrentMode] = useState<string>("mixed");
   const [onboardingProgress, setOnboardingProgress] =
     useState<OnboardingProgress | null>(null);
+  const [coachingSummary, setCoachingSummary] = useState<{
+    activeTasks: number;
+    completedTasks: number;
+    topicCount: number;
+    activeTopicId?: string | null;
+    activeTopicTitle?: string | null;
+  } | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const isMutedRef = useRef(false);
 
@@ -68,7 +81,7 @@ export function useChat({ userId }: UseChatOptions) {
   }, []);
 
   const sendAudio = useCallback(
-    async (audioBlob: Blob) => {
+    async (audioBlob: Blob, options?: SendOptions) => {
       if (!userId) return;
       setIsLoading(true);
       setError(null);
@@ -78,6 +91,15 @@ export function useChat({ userId }: UseChatOptions) {
         formData.append("userId", userId);
         formData.append("audio", audioBlob, "recording.webm");
         if (sessionId) formData.append("sessionId", sessionId);
+        if (options?.activeTopicId) {
+          formData.append("activeTopicId", options.activeTopicId);
+        }
+        if (options?.mode) {
+          formData.append("mode", options.mode);
+        }
+        if (options?.routineId) {
+          formData.append("routineId", options.routineId);
+        }
 
         const response = await fetch("/api/chat", {
           method: "POST",
@@ -95,6 +117,7 @@ export function useChat({ userId }: UseChatOptions) {
         }
         setCurrentMode(data.mode);
         setOnboardingProgress(data.onboardingProgress ?? null);
+        setCoachingSummary(data.coachingSummary ?? null);
 
         setMessages((prev) => [
           ...prev,
@@ -130,7 +153,7 @@ export function useChat({ userId }: UseChatOptions) {
   );
 
   const sendText = useCallback(
-    async (text: string) => {
+    async (text: string, options?: SendOptions) => {
       if (!userId) return;
       setIsLoading(true);
       setError(null);
@@ -139,7 +162,14 @@ export function useChat({ userId }: UseChatOptions) {
         const response = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ userId, text, sessionId }),
+          body: JSON.stringify({
+            userId,
+            text,
+            sessionId,
+            activeTopicId: options?.activeTopicId,
+            mode: options?.mode,
+            routineId: options?.routineId,
+          }),
         });
 
         const data = await response.json();
@@ -153,6 +183,7 @@ export function useChat({ userId }: UseChatOptions) {
         }
         setCurrentMode(data.mode);
         setOnboardingProgress(data.onboardingProgress ?? null);
+        setCoachingSummary(data.coachingSummary ?? null);
 
         setMessages((prev) => [
           ...prev,
@@ -220,6 +251,7 @@ export function useChat({ userId }: UseChatOptions) {
     }
     setSessionId(null);
     setOnboardingProgress(null);
+    setCoachingSummary(null);
     setMessages([]);
   }, [userId]);
 
@@ -230,6 +262,7 @@ export function useChat({ userId }: UseChatOptions) {
     sessionId,
     currentMode,
     onboardingProgress,
+    coachingSummary,
     sendAudio,
     sendText,
     setMuted,
