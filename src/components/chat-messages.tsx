@@ -10,6 +10,8 @@ interface ChatMessagesProps {
   isLoading: boolean;
 }
 
+const HIDDEN_MESSAGES = new Set(["začínám.", "začínám", "start"]);
+
 export function ChatMessages({ messages, isLoading }: ChatMessagesProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -17,18 +19,22 @@ export function ChatMessages({ messages, isLoading }: ChatMessagesProps) {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [messages]);
+  }, [messages, isLoading]);
 
-  if (messages.length === 0 && !isLoading) {
-    return null;
-  }
+  const visibleMessages = messages.filter(
+    (m) =>
+      !(
+        m.role === "user" &&
+        HIDDEN_MESSAGES.has(m.content.toLowerCase().trim())
+      )
+  );
 
   return (
     <div
       ref={scrollRef}
       className="flex-1 overflow-y-auto px-4 py-6 space-y-4 scroll-smooth"
     >
-      {messages.map((message) => (
+      {visibleMessages.map((message) => (
         <div
           key={message.id}
           className={cn(
@@ -52,7 +58,7 @@ export function ChatMessages({ messages, isLoading }: ChatMessagesProps) {
           </div>
           <div
             className={cn(
-              "rounded-2xl px-4 py-3 text-sm leading-relaxed",
+              "rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-line",
               message.role === "user"
                 ? "bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 rounded-br-md"
                 : "bg-neutral-100 dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 rounded-bl-md"

@@ -116,6 +116,87 @@ export async function handleChat(input: ChatInput): Promise<ChatResponse> {
 
 // ── Onboarding ─────────────────────────────────────────────────────
 
+interface OnboardingPhase {
+  id: string;
+  label: string;
+  prompt: string;
+}
+
+const ONBOARDING_PHASES: OnboardingPhase[] = [
+  {
+    id: "reason",
+    label: "Důvod příchodu",
+    prompt: `Uživatel právě přišel. Tvůj úkol: zjistit PROČ přišel.
+Polož přímou otázku bez velkého uvítání. Příklad:
+"Co tě sem přivádí? Řekni mi v pár větách, co bys chtěl/a řešit nebo změnit."
+Buď stručný (1-2 věty max). Nejsi konverzační chatbot -- jdi rovnou na věc.`,
+  },
+  {
+    id: "life_situation",
+    label: "Životní situace",
+    prompt: `Uživatel ti právě řekl, co ho trápí. Teď potřebuješ kontext jeho životní situace.
+Polož 2-3 STRUKTUROVANÉ otázky najednou. Příklad:
+"Díky. Potřebuju pár faktů, abych lépe porozuměl/a tvé situaci:
+1. Jaká je tvoje pracovní situace? (zaměstnaný/OSVČ/student/jiné)
+2. Žiješ s někým? (partner, rodina, sám/sama)
+3. Jak je ti?"
+Buď stručný a věcný. Nepřidávej empatické fráze navíc.`,
+  },
+  {
+    id: "areas_rating",
+    label: "Hodnocení oblastí",
+    prompt: `Teď potřebuješ rychlé hodnocení spokojenosti v klíčových oblastech.
+Požádej uživatele o čísla 1-10. Přesně takto:
+"Ohodnoť svou spokojenost 1-10 v těchto oblastech:
+1. Práce / kariéra
+2. Vztahy (partner, rodina, přátelé)
+3. Zdraví (fyzické i psychické)
+4. Finance
+5. Osobní růst / smysluplnost
+6. Volný čas / zábava"
+Nic víc nepřidávej.`,
+  },
+  {
+    id: "deep_dive",
+    label: "Hloubkové otázky",
+    prompt: `Na základě předchozích odpovědí uživatele identifikuj 1-2 NEJSLABŠÍ oblasti (nejnižší čísla nebo nejvíce bolestivé téma) a polož cílené otázky.
+Příklady:
+- Pokud jsou vztahy problém: "Můžeš být konkrétnější ohledně vztahů? Co přesně nefunguje? Jak dlouho to trvá?"
+- Pokud je to práce: "Co přesně tě na práci trápí? Šéf, kolegy, náplň práce, nebo celý obor?"
+- Pokud je to zdraví: "Jaké zdravotní problémy máš? Spánek, energie, bolesti, psychika?"
+Ptej se SPECIFICKY, ne obecně. Max 2-3 otázky.`,
+  },
+  {
+    id: "interaction_style",
+    label: "Styl komunikace",
+    prompt: `Potřebuješ zjistit, jaký styl komunikace uživatel preferuje.
+Polož tuto otázku PŘESNĚ:
+"Poslední důležitá otázka: Jak chceš, abych s tebou komunikoval/a?
+A) Podporující -- chci hlavně naslouchání a pochopení
+B) Přímý -- chci slyšet pravdu, i když je nepříjemná
+C) Nech to na tobě -- přizpůsob se situaci
+Vyber A, B, nebo C."
+Nic víc nepřidávej.`,
+  },
+  {
+    id: "goals",
+    label: "Cíle",
+    prompt: `Uživatel zvolil styl komunikace. Teď zjisti jeho cíle.
+Polož tuto otázku:
+"Co bys chtěl/a, aby se za 3 měsíce změnilo? Napiš 1-3 konkrétní věci, na kterých chceš pracovat."
+Buď stručný.`,
+  },
+  {
+    id: "summary",
+    label: "Shrnutí",
+    prompt: `Diagnostika je téměř hotová. Na základě VŠECH předchozích odpovědí:
+1. Stručně shrň, co jsi pochopil/a o uživateli (3-5 bodů)
+2. Pojmenuj hlavní oblasti k práci
+3. Zeptej se: "Sedí ti to? Chceš něco doplnit nebo opravit?"
+Buď strukturovaný a věcný.`,
+  },
+];
+
 async function handleOnboarding(
   userId: string,
   sessionId: string,
@@ -123,25 +204,35 @@ async function handleOnboarding(
 ): Promise<string> {
   const onboarding = await getOnboardingState(userId);
   const history = await getConversationHistory(sessionId);
+  const coveredAreas = (onboarding?.coveredAreas as string[]) ?? [];
   const isFirstMessage = history.length <= 1;
 
-  const systemPrompt = `Jsi přátelský AI terapeut a osobní kouč. Mluvíš česky. Právě provádíš úvodní diagnostiku s novým uživatelem.
+  // Determine current phase
+  let currentPhase: OnboardingPhase;
+  if (isFirstMessage) {
+    currentPhase = ONBOARDING_PHASES[0];
+  } else {
+    const nextPhaseIndex = Math.min(
+      coveredAreas.length,
+      ONBOARDING_PHASES.length - 1
+    );
+    currentPhase = ONBOARDING_PHASES[nextPhaseIndex];
+  }
 
-${isFirstMessage ? `Toto je PRVNÍ zpráva uživatele. Přivítej ho vřele, představ se stručně (1-2 věty) a polož první otázku: "Co tě sem přivádí? Co bys chtěl/a řešit?"` : ""}
+  const systemPrompt = `Jsi AI terapeut a kouč. Mluvíš česky. Provádíš STRUKTUROVANOU úvodní diagnostiku.
 
-Tvůj úkol v diagnostice:
-- Zjisti co uživatele trápí nebo co chce změnit
-- Zjisti jeho životní situaci (práce, vztahy, zdraví)
-- Zjisti jak se většinou cítí (emoční baseline)
-- Klíčová otázka: "Když ti někdo blízký řekne nepříjemnou pravdu -- oceníš to, nebo tě to spíš zraní?" (pro volbu stylu komunikace)
-- Zjisti hlavní cíle pro příštích pár měsíců
+AKTUÁLNÍ FÁZE: ${currentPhase.label} (${currentPhase.id})
+POKRYTÉ FÁZE: ${coveredAreas.join(", ") || "žádné"}
 
-Pravidla:
-- Pokládej 1-2 otázky za zprávu, ne víc.
-- Buď přirozený a přátelský, ne jako dotazník.
-- Pokud uživatel nechce odpovědět, respektuj to.
-- Odpovídej PŘÍMO textem, NEPOUŽÍVEJ JSON formát.
-- Buď stručný (max 3-4 věty).`;
+INSTRUKCE PRO TUTO FÁZI:
+${currentPhase.prompt}
+
+GLOBÁLNÍ PRAVIDLA:
+- Odpovídej PŘÍMO textem, NE jako JSON.
+- Buď stručný a strukturovaný. Žádné zbytečné fráze.
+- Pokud uživatel odpoví mimo téma, stručně reaguj a vrať se k otázce.
+- Pokud uživatel nechce odpovědět, zaznamenej to a posuň se dál.
+- NIKDY nepřidávej empatické výplně typu "Děkuji za sdílení", "To musí být těžké" apod. Jdi na věc.`;
 
   const messages = [
     { role: "system" as const, content: systemPrompt },
@@ -153,15 +244,52 @@ Pravidla:
   ];
 
   const responseText = await chatCompletion(messages, {
-    temperature: 0.8,
+    temperature: 0.6,
   });
 
-  // After 6+ messages, consider onboarding done
-  if (history.length >= 6) {
-    await markOnboardingComplete(userId);
+  // Advance phase tracking
+  if (!isFirstMessage && !coveredAreas.includes(currentPhase.id)) {
+    const newCovered = [...coveredAreas, currentPhase.id];
+    await db
+      .update(schema.onboardingState)
+      .set({
+        coveredAreas: newCovered,
+        currentPhase: currentPhase.id,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.onboardingState.userId, userId));
+
+    // Extract interaction style if that phase just completed
+    if (currentPhase.id === "interaction_style") {
+      const style = detectInteractionStyle(transcript);
+      if (style) {
+        await db
+          .update(schema.userProfile)
+          .set({ interactionStyle: style, updatedAt: new Date() })
+          .where(eq(schema.userProfile.userId, userId));
+      }
+    }
+
+    // Complete onboarding after summary
+    if (currentPhase.id === "summary") {
+      await markOnboardingComplete(userId);
+    }
   }
 
   return responseText;
+}
+
+function detectInteractionStyle(
+  text: string
+): "comfort" | "candid" | "adaptive" | null {
+  const lower = text.toLowerCase();
+  if (/\ba\b/.test(lower) || /podpor|naslou|pochop/i.test(lower))
+    return "comfort";
+  if (/\bb\b/.test(lower) || /přím|pravd|upřím|naplno/i.test(lower))
+    return "candid";
+  if (/\bc\b/.test(lower) || /přizpůsob|nech|situac/i.test(lower))
+    return "adaptive";
+  return null;
 }
 
 // ── Normal Chat ────────────────────────────────────────────────────

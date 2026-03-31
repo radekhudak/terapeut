@@ -11,18 +11,19 @@ import {
   Volume2,
   VolumeX,
   MessageSquare,
-  Target,
   Loader2,
   UserPlus,
   X,
+  Mic,
 } from "lucide-react";
 
 export default function Home() {
   const { user, isLoading: userLoading, resetUser } = useUser();
   const [isMuted, setIsMuted] = useState(false);
-  const [showTextInput, setShowTextInput] = useState(false);
+  const [inputMode, setInputMode] = useState<"voice" | "text">("text");
   const [textInput, setTextInput] = useState("");
   const sentBlobRef = useRef<Blob | null>(null);
+  const onboardingStartedRef = useRef(false);
 
   const recorder = useAudioRecorder();
   const chat = useChat({ userId: user?.id ?? "" });
@@ -31,6 +32,21 @@ export default function Home() {
   useEffect(() => {
     chat.setMuted(isMuted);
   }, [isMuted, chat]);
+
+  // Auto-start onboarding for new users
+  useEffect(() => {
+    if (
+      user &&
+      !userLoading &&
+      chat.messages.length === 0 &&
+      !chat.isLoading &&
+      !onboardingStartedRef.current
+    ) {
+      onboardingStartedRef.current = true;
+      chat.sendText("Začínám.");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, userLoading]);
 
   const handleStartRecording = useCallback(async () => {
     if (!user) return;
@@ -72,6 +88,7 @@ export default function Home() {
 
   const handleNewUser = useCallback(async () => {
     if (confirm("Vytvořit nový profil? Aktuální konverzace se ztratí.")) {
+      onboardingStartedRef.current = false;
       await resetUser();
       window.location.reload();
     }
@@ -123,11 +140,17 @@ export default function Home() {
             )}
           </button>
           <button
-            onClick={() => setShowTextInput(!showTextInput)}
+            onClick={() =>
+              setInputMode((m) => (m === "voice" ? "text" : "voice"))
+            }
             className="p-2 rounded-lg hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
-            aria-label="Psát textem"
+            aria-label={inputMode === "voice" ? "Psát textem" : "Mluvit"}
           >
-            <MessageSquare className="w-5 h-5 text-neutral-500" />
+            {inputMode === "voice" ? (
+              <MessageSquare className="w-5 h-5 text-neutral-500" />
+            ) : (
+              <Mic className="w-5 h-5 text-neutral-500" />
+            )}
           </button>
         </div>
       </header>
@@ -144,34 +167,19 @@ export default function Home() {
         </div>
       )}
 
-      {chat.messages.length > 0 ? (
-        <ChatMessages messages={chat.messages} isLoading={chat.isLoading} />
-      ) : (
-        <div className="flex-1 flex flex-col items-center justify-center gap-6 px-8 text-center">
-          <div className="w-16 h-16 rounded-2xl bg-neutral-100 dark:bg-neutral-800 flex items-center justify-center">
-            <Target className="w-8 h-8 text-neutral-400" />
-          </div>
-          <div>
-            <h2 className="text-xl font-semibold mb-2">Ahoj!</h2>
-            <p className="text-neutral-500 dark:text-neutral-400 text-sm leading-relaxed">
-              Jsem tvůj osobní terapeut a kouč.
-              <br />
-              Zmáčkni tlačítko a začni mluvit.
-            </p>
-          </div>
-        </div>
-      )}
+      <ChatMessages messages={chat.messages} isLoading={chat.isLoading} />
 
-      <div className="border-t border-neutral-200 dark:border-neutral-800 px-4 py-6 space-y-4">
-        {showTextInput && (
+      <div className="border-t border-neutral-200 dark:border-neutral-800 px-4 py-4 space-y-3">
+        {inputMode === "text" ? (
           <form onSubmit={handleSendText} className="flex gap-2">
             <input
               type="text"
               value={textInput}
               onChange={(e) => setTextInput(e.target.value)}
-              placeholder="Napiš zprávu..."
+              placeholder="Napiš odpověď..."
               className="flex-1 rounded-xl border border-neutral-200 dark:border-neutral-700 bg-transparent px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-400 dark:focus:ring-neutral-600"
               disabled={chat.isLoading}
+              autoFocus
             />
             <button
               type="submit"
@@ -181,15 +189,15 @@ export default function Home() {
               Odeslat
             </button>
           </form>
+        ) : (
+          <TalkButton
+            isRecording={recorder.isRecording}
+            isLoading={chat.isLoading}
+            duration={recorder.duration}
+            onStart={handleStartRecording}
+            onStop={handleStopRecording}
+          />
         )}
-
-        <TalkButton
-          isRecording={recorder.isRecording}
-          isLoading={chat.isLoading}
-          duration={recorder.duration}
-          onStart={handleStartRecording}
-          onStop={handleStopRecording}
-        />
       </div>
     </div>
   );
