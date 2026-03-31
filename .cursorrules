@@ -1,0 +1,20 @@
+# Pravidla vývoje: AI Terapeut + Kouč
+
+## Architektura
+- Next.js App Router + Vercel serverless
+- PostgreSQL (Neon) + Drizzle ORM + pgvector
+- OpenAI (GPT-4o, Whisper, TTS, Embeddings)
+- Redis (Upstash) + BullMQ pro async agent pipeline
+- shadcn/ui + Tailwind pro frontend
+
+## Pravidla
+1. Vždy loguj pro Learning Agent u každého zápisu do DB (structured logs + trace ID).
+2. Každý API endpoint pro chat musí obsahovat `trigger_insight` v post-processing frontě (Redis).
+3. Schéma DB měň pouze přes Drizzle migrace (`npx drizzle-kit generate` + `npx drizzle-kit migrate`).
+4. UI striktně v shadcn/ui a Tailwind. Žádné inline styly, žádné jiné CSS frameworky.
+5. Všechny AI odpovědi (JSON) musí mít validovanou Zod schéma před zápisem do DB.
+6. Audio soubory se po STT přepisu okamžitě mažou -- neukládat hlasové nahrávky.
+7. Citlivá data (insights, traits, journal) šifruj AES-256 před uložením do DB.
+8. Každý agent musí mít definovaný Zod output schema a error handling (max 2 retries).
+9. Typy sdílej přes `@/lib/types.ts` -- žádné `any`, žádné nevalidované JSON.
+10. Konverzace v češtině: Whisper s `language: "cs"`, TTS s českým hlasem.
