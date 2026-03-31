@@ -2,16 +2,20 @@ import { BaseAgent } from "./base-agent";
 import { z } from "zod";
 
 const HealthCoachOutput = z.object({
-  healthObservations: z.array(
-    z.object({
-      area: z.enum(["sleep", "nutrition", "exercise", "stress", "general"]),
-      observation: z.string(),
-      suggestion: z.string(),
-      urgency: z.enum(["low", "medium", "high"]),
-    })
-  ),
-  shouldCreateGoal: z.boolean(),
-  disclaimerNeeded: z.boolean(),
+  healthObservations: z
+    .array(
+      z.object({
+        area: z
+          .enum(["sleep", "nutrition", "exercise", "stress", "general"])
+          .catch("general"),
+        observation: z.string(),
+        suggestion: z.string().nullish(),
+        urgency: z.enum(["low", "medium", "high"]).catch("low"),
+      })
+    )
+    .catch([]),
+  shouldCreateGoal: z.boolean().catch(false),
+  disclaimerNeeded: z.boolean().catch(false),
 });
 export type HealthCoachOutput = z.infer<typeof HealthCoachOutput>;
 

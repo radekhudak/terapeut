@@ -3,24 +3,31 @@ import { z } from "zod";
 import { log } from "@/lib/logger";
 
 const LearningAgentOutput = z.object({
-  profileUpdates: z.object({
-    traitsToAdd: z.record(z.string(), z.unknown()).optional(),
-    traitsToRemove: z.array(z.string()).optional(),
-    confidenceAdjustment: z.number().min(-0.3).max(0.3).optional(),
-    ambivalenceDetected: z
-      .array(
-        z.object({
-          trait: z.string(),
-          stateA: z.string(),
-          stateB: z.string(),
-          observation: z.string(),
-        })
-      )
-      .optional(),
-  }),
-  disprovedPatternsToAdd: z.array(z.string()).optional(),
-  synthesisNeeded: z.boolean(),
-  synthesisNotes: z.string().optional(),
+  profileUpdates: z
+    .object({
+      traitsToAdd: z.record(z.string(), z.unknown()).nullish(),
+      traitsToRemove: z.array(z.string()).nullish(),
+      confidenceAdjustment: z.number().min(-0.3).max(0.3).nullish(),
+      ambivalenceDetected: z
+        .array(
+          z.object({
+            trait: z.string(),
+            stateA: z.string(),
+            stateB: z.string(),
+            observation: z.string(),
+          })
+        )
+        .nullish(),
+    })
+    .catch({
+      traitsToAdd: null,
+      traitsToRemove: null,
+      confidenceAdjustment: null,
+      ambivalenceDetected: null,
+    }),
+  disprovedPatternsToAdd: z.array(z.string()).nullish(),
+  synthesisNeeded: z.boolean().catch(false),
+  synthesisNotes: z.string().nullish(),
 });
 export type LearningAgentOutput = z.infer<typeof LearningAgentOutput>;
 

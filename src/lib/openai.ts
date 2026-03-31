@@ -1,9 +1,12 @@
 import OpenAI from "openai";
-import { env } from "./env";
 
-export const openai = new OpenAI({
-  apiKey: env.OPENAI_API_KEY,
-});
+let _openai: OpenAI | null = null;
+
+function getClient(): OpenAI {
+  if (_openai) return _openai;
+  _openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  return _openai;
+}
 
 export async function transcribeAudio(
   audioBuffer: Buffer,
@@ -13,7 +16,7 @@ export async function transcribeAudio(
     type: "audio/webm",
   });
 
-  const response = await openai.audio.transcriptions.create({
+  const response = await getClient().audio.transcriptions.create({
     model: "whisper-1",
     file,
     language: "cs",
@@ -29,7 +32,7 @@ export async function transcribeAudio(
 export async function generateSpeech(
   text: string
 ): Promise<ReadableStream<Uint8Array>> {
-  const response = await openai.audio.speech.create({
+  const response = await getClient().audio.speech.create({
     model: "tts-1",
     voice: "nova",
     input: text,
@@ -41,9 +44,12 @@ export async function generateSpeech(
 
 export async function chatCompletion(
   messages: OpenAI.ChatCompletionMessageParam[],
-  options?: { temperature?: number; response_format?: { type: "json_object" } }
+  options?: {
+    temperature?: number;
+    response_format?: { type: "json_object" };
+  }
 ): Promise<string> {
-  const response = await openai.chat.completions.create({
+  const response = await getClient().chat.completions.create({
     model: "gpt-4o",
     messages,
     temperature: options?.temperature ?? 0.7,
@@ -56,7 +62,7 @@ export async function chatCompletion(
 }
 
 export async function generateEmbedding(text: string): Promise<number[]> {
-  const response = await openai.embeddings.create({
+  const response = await getClient().embeddings.create({
     model: "text-embedding-3-small",
     input: text,
   });

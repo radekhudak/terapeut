@@ -74,7 +74,7 @@ function getSystemPrompt(
   "response": "tvoje odpověď uživateli (česky, přirozeně)",
   "detectedMode": "therapy" nebo "coaching" nebo "mixed",
   "shouldFollowUp": true/false,
-  "followUpTopic": "na co se zeptat příště (volitelné)"
+  "followUpTopic": "na co se zeptat příště (nebo null)"
 }`;
 
   return prompt;
@@ -96,7 +96,10 @@ export async function runConversationAgent(
 
   const messages = [
     { role: "system" as const, content: systemPrompt },
-    { role: "system" as const, content: `Kontext uživatele:\n${contextSummary}` },
+    {
+      role: "system" as const,
+      content: `Kontext uživatele:\n${contextSummary}`,
+    },
     ...conversationHistory.slice(-10).map((m) => ({
       role: m.role as "user" | "assistant",
       content: m.content,
@@ -104,18 +107,55 @@ export async function runConversationAgent(
     { role: "user" as const, content: userMessage },
   ];
 
-  const raw = await chatCompletion(messages, {
-    temperature: 0.7,
-    response_format: { type: "json_object" },
-  });
+  try {
+    const raw = await chatCompletion(messages, {
+      temperature: 0.7,
+      response_format: { type: "json_object" },
+    });
 
-  const parsed = ConversationAgentOutput.parse(JSON.parse(raw));
+    const parsed = ConversationAgentOutput.parse(JSON.parse(raw));
 
-  log("info", "ConversationAgent", "response_generated", {
-    data: { mode: parsed.detectedMode, shouldFollowUp: parsed.shouldFollowUp },
-  });
+    log("info", "ConversationAgent", "response_generated", {
+      data: {
+        mode: parsed.detectedMode,
+        shouldFollowUp: parsed.shouldFollowUp,
+      },
+    });
 
-  return parsed;
+    return parsed;
+  } catch (error) {
+    log("warn", "ConversationAgent", "json_parse_failed_fallback", {
+      data: { error: error instanceof Error ? error.message : String(error) },
+    });
+
+    // Fallback: call without JSON mode, use raw text as response
+    const fallbackMessages = [
+      ...messages.slice(0, -1).map((m) => {
+        if (m.role === "system" && m.content.includes("Odpověz VŽDY jako JSON")) {
+          return {
+            ...m,
+            content: m.content.replace(
+              /Odpověz VŽDY jako JSON[\s\S]*$/,
+              "Odpověz česky, přirozeně. Buď stručný (max 3-4 věty)."
+            ),
+          };
+        }
+        return m;
+      }),
+      messages[messages.length - 1],
+    ];
+
+    const fallbackRaw = await chatCompletion(fallbackMessages, {
+      temperature: 0.7,
+    });
+
+    return {
+      response: fallbackRaw,
+      detectedMode: "mixed",
+      shouldFollowUp: false,
+      followUpTopic: null,
+    };
+  }
 }
 
 function buildContextSummary(ctx: ConversationContext): string {
@@ -128,7 +168,9 @@ function buildContextSummary(ctx: ConversationContext): string {
     parts.push(`Relevantní historie:\n${ctx.longTermRelevant.join("\n")}`);
   }
   if (ctx.userConstraints.length > 0) {
-    parts.push(`NESMÍŠ navrhovat (uživatel odmítl):\n${ctx.userConstraints.join("\n")}`);
+    parts.push(
+      `NESMÍŠ navrhovat (uživatel odmítl):\n${ctx.userConstraints.join("\n")}`
+    );
   }
   if (ctx.activeGoals.length > 0) {
     parts.push(`Aktivní cíle:\n${ctx.activeGoals.join("\n")}`);

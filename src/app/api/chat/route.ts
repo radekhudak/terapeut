@@ -7,6 +7,8 @@ import {
 } from "@/agents/orchestrator";
 import { log, startTrace } from "@/lib/logger";
 
+export const maxDuration = 60;
+
 export async function POST(request: NextRequest) {
   startTrace();
 
@@ -59,9 +61,6 @@ export async function POST(request: NextRequest) {
       audioFilename,
     });
 
-    // Run async agent pipeline AFTER response is sent to user.
-    // This uses Next.js after() -- the function runs in the same
-    // serverless invocation but after the response stream closes.
     const pendingJob = consumePendingJob();
     if (pendingJob) {
       after(async () => {
@@ -79,12 +78,19 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json(result);
   } catch (error) {
+    const message =
+      error instanceof Error ? error.message : String(error);
+    const stack = error instanceof Error ? error.stack : undefined;
+
     log("error", "API", "chat_error", {
-      data: { error: error instanceof Error ? error.message : String(error) },
+      data: { error: message, stack },
     });
 
     return NextResponse.json(
-      { error: "Internal server error" },
+      {
+        error: "Chat failed",
+        detail: message,
+      },
       { status: 500 }
     );
   }

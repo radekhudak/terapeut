@@ -70,72 +70,107 @@ export const OnboardingPhase = z.enum(["A", "B", "C", "done"]);
 export type OnboardingPhase = z.infer<typeof OnboardingPhase>;
 
 // ── Agent Output Schemas ───────────────────────────────────────────
+// LLMs return null for missing fields, so we use .nullish() (= null | undefined)
 
 export const ConversationAgentOutput = z.object({
   response: z.string(),
-  detectedMode: SessionMode,
-  shouldFollowUp: z.boolean(),
-  followUpTopic: z.string().optional(),
+  detectedMode: SessionMode.catch("mixed"),
+  shouldFollowUp: z.boolean().catch(false),
+  followUpTopic: z.string().nullish(),
 });
 export type ConversationAgentOutput = z.infer<typeof ConversationAgentOutput>;
 
 export const FeedbackAgentOutput = z.object({
-  hasCorrection: z.boolean(),
-  correctionDetail: z.string().optional(),
-  feedbackType: FeedbackType.optional(),
-  disprovedPattern: z.string().optional(),
+  hasCorrection: z.boolean().catch(false),
+  correctionDetail: z.string().nullish(),
+  feedbackType: FeedbackType.nullish(),
+  disprovedPattern: z.string().nullish(),
 });
 export type FeedbackAgentOutput = z.infer<typeof FeedbackAgentOutput>;
 
 export const InsightAgentOutput = z.object({
-  insights: z.array(
-    z.object({
-      text: z.string(),
-      type: InsightType,
-      confidence: z.number().min(0).max(1),
-    })
-  ),
+  insights: z
+    .array(
+      z.object({
+        text: z.string(),
+        type: InsightType.catch("observation"),
+        confidence: z.number().min(0).max(1).catch(0.5),
+      })
+    )
+    .catch([]),
 });
 export type InsightAgentOutput = z.infer<typeof InsightAgentOutput>;
 
 export const ReflectionAgentOutput = z.object({
-  warnings: z.array(z.string()),
-  suggestedTone: z.string(),
-  relevantTraits: z.array(z.string()),
-  interactionStyleOverride: InteractionStyle.optional(),
+  warnings: z.array(z.string()).catch([]),
+  suggestedTone: z.string().catch("přátelský a empatický"),
+  relevantTraits: z.array(z.string()).catch([]),
+  interactionStyleOverride: InteractionStyle.nullish(),
 });
 export type ReflectionAgentOutput = z.infer<typeof ReflectionAgentOutput>;
 
 export const GoalAgentOutput = z.object({
-  detectedGoals: z.array(
-    z.object({
-      title: z.string(),
-      area: GoalArea,
-      description: z.string(),
-      suggestedSteps: z.array(z.string()),
-    })
-  ),
+  detectedGoals: z
+    .array(
+      z.object({
+        title: z.string(),
+        area: GoalArea.catch("other"),
+        description: z.string().catch(""),
+        suggestedSteps: z.array(z.string()).catch([]),
+      })
+    )
+    .catch([]),
 });
 export type GoalAgentOutput = z.infer<typeof GoalAgentOutput>;
 
 export const DiagnosticAgentOutput = z.object({
-  coveredAreas: z.array(z.string()),
-  pendingAreas: z.array(z.string()),
-  suggestedNextQuestions: z.array(z.string()),
-  detectedInteractionStyle: InteractionStyle.optional(),
-  suggestedDataSources: z.array(z.string()),
-  initialTraits: z.record(z.string(), z.unknown()).optional(),
-  phase: OnboardingPhase,
+  coveredAreas: z.array(z.string()).catch([]),
+  pendingAreas: z.array(z.string()).catch([]),
+  suggestedNextQuestions: z.array(z.string()).catch([]),
+  detectedInteractionStyle: InteractionStyle.nullish(),
+  suggestedDataSources: z.array(z.string()).catch([]),
+  initialTraits: z.record(z.string(), z.unknown()).nullish(),
+  phase: OnboardingPhase.catch("A"),
 });
 export type DiagnosticAgentOutput = z.infer<typeof DiagnosticAgentOutput>;
 
 export const MoodAnalysisOutput = z.object({
-  mood: z.number().min(1).max(10),
-  energy: z.number().min(1).max(10),
-  sentiment: z.enum(["positive", "neutral", "negative", "mixed"]),
-  dominantEmotion: z.string(),
+  mood: z.number().min(1).max(10).catch(5),
+  energy: z.number().min(1).max(10).catch(5),
+  sentiment: z
+    .enum(["positive", "neutral", "negative", "mixed"])
+    .catch("neutral"),
+  dominantEmotion: z.string().catch("neutrální"),
 });
 export type MoodAnalysisOutput = z.infer<typeof MoodAnalysisOutput>;
+
+// Learning Agent output
+export const LearningAgentOutput = z.object({
+  profileUpdates: z.object({
+    traitsToAdd: z.record(z.string(), z.unknown()).nullish(),
+    traitsToRemove: z.array(z.string()).nullish(),
+    confidenceAdjustment: z.number().nullish(),
+  }).catch({ traitsToAdd: null, traitsToRemove: null, confidenceAdjustment: null }),
+  disprovedPatternsToAdd: z.array(z.string()).nullish(),
+  synthesisReport: z.string().nullish(),
+});
+export type LearningAgentOutput = z.infer<typeof LearningAgentOutput>;
+
+// Health Coach Agent output
+export const HealthCoachAgentOutput = z.object({
+  healthObservations: z
+    .array(
+      z.object({
+        area: z.string(),
+        observation: z.string(),
+        suggestion: z.string().nullish(),
+        urgency: z.enum(["low", "medium", "high"]).catch("low"),
+      })
+    )
+    .catch([]),
+  shouldAlert: z.boolean().catch(false),
+});
+export type HealthCoachAgentOutput = z.infer<typeof HealthCoachAgentOutput>;
 
 // ── Context Builder ────────────────────────────────────────────────
 export interface ConversationContext {

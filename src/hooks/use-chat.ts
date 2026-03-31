@@ -7,7 +7,6 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   timestamp: Date;
-  audioUrl?: string;
 }
 
 interface UseChatOptions {
@@ -17,13 +16,25 @@ interface UseChatOptions {
 export function useChat({ userId }: UseChatOptions) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [currentMode, setCurrentMode] = useState<string>("mixed");
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const isMutedRef = useRef(false);
+
+  const setMuted = useCallback((muted: boolean) => {
+    isMutedRef.current = muted;
+    if (muted && audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+  }, []);
 
   const sendAudio = useCallback(
     async (audioBlob: Blob) => {
+      if (!userId) return;
       setIsLoading(true);
+      setError(null);
 
       try {
         const formData = new FormData();
@@ -36,33 +47,40 @@ export function useChat({ userId }: UseChatOptions) {
           body: formData,
         });
 
-        if (!response.ok) throw new Error("Chat request failed");
-
         const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.detail ?? data.error ?? "Chat request failed");
+        }
 
         if (!sessionId) setSessionId(data.sessionId);
         setCurrentMode(data.mode);
 
-        const userMsg: ChatMessage = {
-          id: crypto.randomUUID(),
-          role: "user",
-          content: data.transcript,
-          timestamp: new Date(),
-        };
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            role: "user",
+            content: data.transcript,
+            timestamp: new Date(),
+          },
+          {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: data.responseText,
+            timestamp: new Date(),
+          },
+        ]);
 
-        const assistantMsg: ChatMessage = {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          content: data.responseText,
-          timestamp: new Date(),
-        };
-
-        setMessages((prev) => [...prev, userMsg, assistantMsg]);
-
-        // Generate TTS and play
-        await playTTS(data.responseText);
+        if (!isMutedRef.current) {
+          playTTS(data.responseText);
+        }
 
         return data;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Něco se pokazilo";
+        setError(msg);
+        console.error("sendAudio error:", err);
       } finally {
         setIsLoading(false);
       }
@@ -73,7 +91,9 @@ export function useChat({ userId }: UseChatOptions) {
 
   const sendText = useCallback(
     async (text: string) => {
+      if (!userId) return;
       setIsLoading(true);
+      setError(null);
 
       try {
         const response = await fetch("/api/chat", {
@@ -82,32 +102,40 @@ export function useChat({ userId }: UseChatOptions) {
           body: JSON.stringify({ userId, text, sessionId }),
         });
 
-        if (!response.ok) throw new Error("Chat request failed");
-
         const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.detail ?? data.error ?? "Chat request failed");
+        }
 
         if (!sessionId) setSessionId(data.sessionId);
         setCurrentMode(data.mode);
 
-        const userMsg: ChatMessage = {
-          id: crypto.randomUUID(),
-          role: "user",
-          content: text,
-          timestamp: new Date(),
-        };
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            role: "user",
+            content: text,
+            timestamp: new Date(),
+          },
+          {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: data.responseText,
+            timestamp: new Date(),
+          },
+        ]);
 
-        const assistantMsg: ChatMessage = {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          content: data.responseText,
-          timestamp: new Date(),
-        };
-
-        setMessages((prev) => [...prev, userMsg, assistantMsg]);
-
-        await playTTS(data.responseText);
+        if (!isMutedRef.current) {
+          playTTS(data.responseText);
+        }
 
         return data;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Něco se pokazilo";
+        setError(msg);
+        console.error("sendText error:", err);
       } finally {
         setIsLoading(false);
       }
@@ -126,35 +154,32 @@ export function useChat({ userId }: UseChatOptions) {
 
       if (!response.ok) return;
 
-      const audioBlob = await response.blob();
-      const audioUrl = URL.createObjectURL(audioBlob);
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
 
       if (audioRef.current) {
         audioRef.current.pause();
       }
 
-      const audio = new Audio(audioUrl);
+      const audio = new Audio(url);
       audioRef.current = audio;
       await audio.play();
-    } catch (error) {
-      console.error("TTS playback failed:", error);
+    } catch (err) {
+      console.error("TTS playback failed:", err);
     }
   }, []);
 
-  const stopPlayback = useCallback(() => {
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current = null;
-    }
-  }, []);
+  const clearError = useCallback(() => setError(null), []);
 
   return {
     messages,
     isLoading,
+    error,
     sessionId,
     currentMode,
     sendAudio,
     sendText,
-    stopPlayback,
+    setMuted,
+    clearError,
   };
 }

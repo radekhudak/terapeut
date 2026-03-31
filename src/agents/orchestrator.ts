@@ -7,9 +7,8 @@ import { learningAgent, shouldRunSynthesis } from "./learning-agent";
 import { insightAgent } from "./insight-agent";
 import { goalAgent } from "./goal-agent";
 import { healthCoachAgent } from "./health-coach-agent";
-import { diagnosticAgent } from "./diagnostic-agent";
 import { buildContext } from "@/context/builder";
-import { transcribeAudio, generateEmbedding } from "@/lib/openai";
+import { transcribeAudio, generateEmbedding, chatCompletion } from "@/lib/openai";
 import { encrypt, decrypt } from "@/lib/crypto";
 import { log, startTrace } from "@/lib/logger";
 import type { ChatResponse, SessionMode } from "@/lib/types";
@@ -30,18 +29,27 @@ export async function handleChat(input: ChatInput): Promise<ChatResponse> {
     data: { hasAudio: !!input.audioBuffer, hasText: !!input.text },
   });
 
+  // 1. STT if audio
   let transcript = input.text ?? "";
-  const voiceSentiment: string | null = null;
 
   if (input.audioBuffer && input.audioFilename) {
-    const sttResult = await transcribeAudio(
-      input.audioBuffer,
-      input.audioFilename
-    );
-    transcript = sttResult.text;
-    log("info", "Orchestrator", "stt_completed", {
-      data: { textLength: transcript.length },
-    });
+    try {
+      const sttResult = await transcribeAudio(
+        input.audioBuffer,
+        input.audioFilename
+      );
+      transcript = sttResult.text;
+      log("info", "Orchestrator", "stt_completed", {
+        data: { textLength: transcript.length },
+      });
+    } catch (error) {
+      log("error", "Orchestrator", "stt_failed", {
+        data: { error: error instanceof Error ? error.message : String(error) },
+      });
+      throw new Error(
+        `STT failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
   }
 
   if (!transcript.trim()) {
@@ -56,9 +64,14 @@ export async function handleChat(input: ChatInput): Promise<ChatResponse> {
   const isOnboarding = !profile.onboardingCompleted;
 
   // 4. Save user message
-  const messageId = await saveMessage(sessionId, input.userId, "user", transcript);
+  const messageId = await saveMessage(
+    sessionId,
+    input.userId,
+    "user",
+    transcript
+  );
 
-  // 5. Start embedding in background
+  // 5. Embed in background (fire and forget, don't block response)
   embedMessageAsync(messageId, transcript);
 
   let responseText: string;
@@ -66,90 +79,22 @@ export async function handleChat(input: ChatInput): Promise<ChatResponse> {
   const goalsUpdated = false;
 
   if (isOnboarding) {
-    // Onboarding flow
-    const onboarding = await getOnboardingState(input.userId);
-    const history = await getConversationHistory(sessionId);
-
-    const diagnosticResult = await diagnosticAgent.run(
-      [{ role: "user", content: transcript }],
-      {
-        coveredAreas: onboarding?.coveredAreas ?? [],
-        pendingAreas: onboarding?.pendingAreas ?? [],
-        currentPhase: onboarding?.currentPhase ?? "A",
-        conversationHistory: history,
-      }
-    );
-
-    // Generate conversational response for onboarding
-    const onboardingMessages = [
-      {
-        role: "system" as const,
-        content: `Jsi přátelský AI terapeut/kouč, který právě provádí úvodní diagnostiku. Mluvíš česky.
-Polož další otázky přirozeným konverzačním tónem. Nepoužívej JSON formát -- mluv normálně.
-Otázky k položení: ${diagnosticResult.suggestedNextQuestions.join("; ")}
-${diagnosticResult.phase === "C" ? "Nabídni relevantní datové zdroje: " + diagnosticResult.suggestedDataSources.join(", ") : ""}
-${diagnosticResult.phase === "done" ? "Diagnostika je hotová. Shrň, co jsi zjistil, a zeptej se, jestli to sedí." : ""}`,
-      },
-      ...history.map((m) => ({
-        role: m.role as "user" | "assistant",
-        content: m.content,
-      })),
-      { role: "user" as const, content: transcript },
-    ];
-
-    const { chatCompletion } = await import("@/lib/openai");
-    responseText = await chatCompletion(onboardingMessages, {
-      temperature: 0.8,
-    });
-
-    // Update onboarding state
-    await updateOnboardingState(input.userId, diagnosticResult);
-
-    if (diagnosticResult.phase === "done") {
-      await markOnboardingComplete(input.userId, diagnosticResult);
-    }
-
-    mode = "mixed";
-  } else {
-    // Normal flow
-    const context = await buildContext(
+    responseText = await handleOnboarding(
       input.userId,
       sessionId,
-      transcript,
-      voiceSentiment
+      transcript
     );
-    const history = await getConversationHistory(sessionId);
-
-    // 6. Reflection Agent
-    const reflection = await reflectionAgent.run(
-      [{ role: "user", content: transcript }],
-      {
-        traits: profile.traits,
-        disprovedPatterns: profile.disprovedPatterns,
-        interactionStyle: profile.interactionStyle,
-        recentHistory: history.slice(-5).map((m) => m.content),
-      }
-    );
-
-    // 7. Conversation Agent
-    const conversationResult = await runConversationAgent(
-      transcript,
-      context,
-      reflection,
-      history
-    );
-
-    responseText = conversationResult.response;
-    mode = conversationResult.detectedMode;
-
-    // 8. Schedule async agent pipeline (runs after response is sent via after())
-    scheduleAsyncPipeline({
-      messageId,
-      userId: input.userId,
+    mode = "mixed";
+  } else {
+    const result = await handleNormalChat(
+      input.userId,
       sessionId,
-      content: transcript,
-      voiceSentiment: voiceSentiment ?? undefined,
-    });
+      messageId,
+      transcript,
+      profile
+    );
+    responseText = result.responseText;
+    mode = result.mode;
   }
 
   // 9. Save assistant message
@@ -169,6 +114,143 @@ ${diagnosticResult.phase === "done" ? "Diagnostika je hotová. Shrň, co jsi zji
   };
 }
 
+// ── Onboarding ─────────────────────────────────────────────────────
+
+async function handleOnboarding(
+  userId: string,
+  sessionId: string,
+  transcript: string
+): Promise<string> {
+  const onboarding = await getOnboardingState(userId);
+  const history = await getConversationHistory(sessionId);
+  const isFirstMessage = history.length <= 1;
+
+  const systemPrompt = `Jsi přátelský AI terapeut a osobní kouč. Mluvíš česky. Právě provádíš úvodní diagnostiku s novým uživatelem.
+
+${isFirstMessage ? `Toto je PRVNÍ zpráva uživatele. Přivítej ho vřele, představ se stručně (1-2 věty) a polož první otázku: "Co tě sem přivádí? Co bys chtěl/a řešit?"` : ""}
+
+Tvůj úkol v diagnostice:
+- Zjisti co uživatele trápí nebo co chce změnit
+- Zjisti jeho životní situaci (práce, vztahy, zdraví)
+- Zjisti jak se většinou cítí (emoční baseline)
+- Klíčová otázka: "Když ti někdo blízký řekne nepříjemnou pravdu -- oceníš to, nebo tě to spíš zraní?" (pro volbu stylu komunikace)
+- Zjisti hlavní cíle pro příštích pár měsíců
+
+Pravidla:
+- Pokládej 1-2 otázky za zprávu, ne víc.
+- Buď přirozený a přátelský, ne jako dotazník.
+- Pokud uživatel nechce odpovědět, respektuj to.
+- Odpovídej PŘÍMO textem, NEPOUŽÍVEJ JSON formát.
+- Buď stručný (max 3-4 věty).`;
+
+  const messages = [
+    { role: "system" as const, content: systemPrompt },
+    ...history.map((m) => ({
+      role: m.role as "user" | "assistant",
+      content: m.content,
+    })),
+    { role: "user" as const, content: transcript },
+  ];
+
+  const responseText = await chatCompletion(messages, {
+    temperature: 0.8,
+  });
+
+  // After 6+ messages, consider onboarding done
+  if (history.length >= 6) {
+    await markOnboardingComplete(userId);
+  }
+
+  return responseText;
+}
+
+// ── Normal Chat ────────────────────────────────────────────────────
+
+async function handleNormalChat(
+  userId: string,
+  sessionId: string,
+  messageId: string,
+  transcript: string,
+  profile: Awaited<ReturnType<typeof getOrCreateProfile>>
+): Promise<{ responseText: string; mode: SessionMode }> {
+  const voiceSentiment: string | null = null;
+
+  let context;
+  try {
+    context = await buildContext(userId, sessionId, transcript, voiceSentiment);
+  } catch (error) {
+    log("warn", "Orchestrator", "context_build_failed", {
+      data: { error: error instanceof Error ? error.message : String(error) },
+    });
+    // Fallback minimal context
+    context = {
+      shortTerm: [],
+      longTermRelevant: [],
+      userConstraints: [],
+      growthMilestones: [],
+      activeGoals: [],
+      pendingActions: [],
+      voiceSentiment: null,
+      sessionMode: "mixed" as SessionMode,
+      interactionStyle: (profile.interactionStyle ?? "adaptive") as
+        | "comfort"
+        | "candid"
+        | "adaptive",
+      healthTrends: null,
+      assessmentBaseline: null,
+      recentCheckins: null,
+    };
+  }
+
+  const history = await getConversationHistory(sessionId);
+
+  // Reflection Agent
+  let reflection;
+  try {
+    reflection = await reflectionAgent.run(
+      [{ role: "user", content: transcript }],
+      {
+        traits: profile.traits,
+        disprovedPatterns: profile.disprovedPatterns,
+        interactionStyle: profile.interactionStyle,
+        recentHistory: history.slice(-5).map((m) => m.content),
+      }
+    );
+  } catch (error) {
+    log("warn", "Orchestrator", "reflection_agent_failed", {
+      data: { error: error instanceof Error ? error.message : String(error) },
+    });
+    reflection = {
+      warnings: [],
+      suggestedTone: "přátelský a empatický",
+      relevantTraits: [],
+      interactionStyleOverride: undefined,
+    };
+  }
+
+  // Conversation Agent
+  const conversationResult = await runConversationAgent(
+    transcript,
+    context,
+    reflection,
+    history
+  );
+
+  // Schedule background agent pipeline
+  scheduleAsyncPipeline({
+    messageId,
+    userId,
+    sessionId,
+    content: transcript,
+    voiceSentiment: voiceSentiment ?? undefined,
+  });
+
+  return {
+    responseText: conversationResult.response,
+    mode: conversationResult.detectedMode,
+  };
+}
+
 // ── Background job scheduling ──────────────────────────────────────
 
 let pendingJob: InsightJobData | null = null;
@@ -185,10 +267,6 @@ function scheduleAsyncPipeline(data: InsightJobData) {
   pendingJob = data;
 }
 
-/**
- * Returns the pending background job and clears it.
- * Called by the API route to pass to `after()`.
- */
 export function consumePendingJob(): InsightJobData | null {
   const job = pendingJob;
   pendingJob = null;
@@ -211,132 +289,137 @@ export async function processInsightJob(data: {
     data: { messageId: data.messageId },
   });
 
-  const history = await getConversationHistory(data.sessionId);
-  const profile = await getOrCreateProfile(data.userId);
+  try {
+    const history = await getConversationHistory(data.sessionId);
+    const profile = await getOrCreateProfile(data.userId);
 
-  // Feedback Agent
-  const feedbackResult = await feedbackAgent.run(
-    [
+    // Feedback Agent
+    const feedbackResult = await feedbackAgent.run(
+      [
+        {
+          role: "user",
+          content: `Předchozí konverzace:\n${history.slice(-5).map((m) => `${m.role}: ${m.content}`).join("\n")}\n\nPoslední zpráva uživatele: ${data.content}`,
+        },
+      ],
       {
-        role: "user",
-        content: `Předchozí konverzace:\n${history.slice(-5).map((m) => `${m.role}: ${m.content}`).join("\n")}\n\nPoslední zpráva uživatele: ${data.content}`,
-      },
-    ],
-    { currentTraits: profile.traits, disprovedPatterns: profile.disprovedPatterns }
-  );
+        currentTraits: profile.traits,
+        disprovedPatterns: profile.disprovedPatterns,
+      }
+    );
 
-  // Save feedback if detected
-  if (feedbackResult.feedbackType) {
-    await db.insert(schema.feedbackLog).values({
-      messageId: data.messageId,
-      userId: data.userId,
-      type: feedbackResult.feedbackType,
-      correctionDetail: feedbackResult.correctionDetail,
-    });
-  }
-
-  // Learning Agent
-  const messageCount = await getMessageCount(data.userId);
-  const needsSynthesis = await shouldRunSynthesis(messageCount);
-
-  const learningResult = await learningAgent.run(
-    [
-      {
-        role: "user",
-        content: `Feedback: ${JSON.stringify(feedbackResult)}\nPoslední zpráva: ${data.content}\nVoice sentiment: ${data.voiceSentiment ?? "unknown"}`,
-      },
-    ],
-    {
-      currentTraits: profile.traits,
-      confidenceScore: profile.confidenceScore,
-      disprovedPatterns: profile.disprovedPatterns,
-      synthesisNeeded: needsSynthesis,
-    }
-  );
-
-  // Apply profile updates
-  await applyProfileUpdates(data.userId, learningResult);
-
-  // Insight Agent
-  const insightResult = await insightAgent.run(
-    [
-      {
-        role: "user",
-        content: `Konverzace:\n${history.slice(-10).map((m) => `${m.role}: ${m.content}`).join("\n")}`,
-      },
-    ],
-    { currentTraits: profile.traits, disprovedPatterns: profile.disprovedPatterns }
-  );
-
-  for (const insight of insightResult.insights) {
-    await db.insert(schema.insights).values({
-      userId: data.userId,
-      insightTextEncrypted: encrypt(insight.text),
-      insightType: insight.type,
-      confidence: insight.confidence,
-    });
-  }
-
-  // Goal Agent
-  const goalResult = await goalAgent.run(
-    [{ role: "user", content: data.content }],
-    {
-      activeGoals: await db
-        .select()
-        .from(schema.goals)
-        .where(eq(schema.goals.userId, data.userId)),
-    }
-  );
-
-  for (const goal of goalResult.detectedGoals) {
-    const [inserted] = await db
-      .insert(schema.goals)
-      .values({
+    if (feedbackResult.feedbackType) {
+      await db.insert(schema.feedbackLog).values({
+        messageId: data.messageId,
         userId: data.userId,
-        area: goal.area,
-        title: goal.title,
-        description: goal.description,
-      })
-      .returning({ id: schema.goals.id });
+        type: feedbackResult.feedbackType,
+        correctionDetail: feedbackResult.correctionDetail,
+      });
+    }
 
-    if (inserted) {
-      for (const step of goal.suggestedSteps) {
-        await db.insert(schema.actionPlans).values({
-          goalId: inserted.id,
-          stepDescription: step,
-        });
+    // Learning Agent
+    const messageCount = await getMessageCount(data.userId);
+    const needsSynthesis = await shouldRunSynthesis(messageCount);
+
+    const learningResult = await learningAgent.run(
+      [
+        {
+          role: "user",
+          content: `Feedback: ${JSON.stringify(feedbackResult)}\nPoslední zpráva: ${data.content}\nVoice sentiment: ${data.voiceSentiment ?? "unknown"}`,
+        },
+      ],
+      {
+        currentTraits: profile.traits,
+        confidenceScore: profile.confidenceScore,
+        disprovedPatterns: profile.disprovedPatterns,
+        synthesisNeeded: needsSynthesis,
+      }
+    );
+
+    await applyProfileUpdates(data.userId, learningResult);
+
+    // Insight Agent
+    const insightResult = await insightAgent.run(
+      [
+        {
+          role: "user",
+          content: `Konverzace:\n${history.slice(-10).map((m) => `${m.role}: ${m.content}`).join("\n")}`,
+        },
+      ],
+      {
+        currentTraits: profile.traits,
+        disprovedPatterns: profile.disprovedPatterns,
+      }
+    );
+
+    for (const insight of insightResult.insights) {
+      await db.insert(schema.insights).values({
+        userId: data.userId,
+        insightTextEncrypted: encrypt(insight.text),
+        insightType: insight.type,
+        confidence: insight.confidence,
+      });
+    }
+
+    // Goal Agent
+    const goalResult = await goalAgent.run(
+      [{ role: "user", content: data.content }],
+      {
+        activeGoals: await db
+          .select()
+          .from(schema.goals)
+          .where(eq(schema.goals.userId, data.userId)),
+      }
+    );
+
+    for (const goal of goalResult.detectedGoals) {
+      const [inserted] = await db
+        .insert(schema.goals)
+        .values({
+          userId: data.userId,
+          area: goal.area,
+          title: goal.title,
+          description: goal.description,
+        })
+        .returning({ id: schema.goals.id });
+
+      if (inserted) {
+        for (const step of goal.suggestedSteps) {
+          await db.insert(schema.actionPlans).values({
+            goalId: inserted.id,
+            stepDescription: step,
+          });
+        }
       }
     }
-  }
 
-  // Health Coach Agent
-  const healthResult = await healthCoachAgent.run(
-    [{ role: "user", content: data.content }],
-    { voiceSentiment: data.voiceSentiment }
-  );
+    // Health Coach Agent
+    const healthResult = await healthCoachAgent.run(
+      [{ role: "user", content: data.content }],
+      { voiceSentiment: data.voiceSentiment }
+    );
 
-  if (healthResult.healthObservations.length > 0) {
-    log("info", "HealthCoachAgent", "observations_found", {
+    if (healthResult.healthObservations.length > 0) {
+      log("info", "HealthCoachAgent", "observations_found", {
+        userId: data.userId,
+        data: { count: healthResult.healthObservations.length },
+      });
+    }
+
+    await db.insert(schema.interactionMetadata).values({
+      messageId: data.messageId,
+      voiceSentiment: data.voiceSentiment,
+      responseMode: "mixed",
+    });
+
+    log("info", "Orchestrator", "async_pipeline_completed", {
       userId: data.userId,
-      data: { count: healthResult.healthObservations.length },
+    });
+  } catch (error) {
+    log("error", "Orchestrator", "async_pipeline_error", {
+      userId: data.userId,
+      data: { error: error instanceof Error ? error.message : String(error) },
     });
   }
-
-  // Interaction metadata
-  await db.insert(schema.interactionMetadata).values({
-    messageId: data.messageId,
-    voiceSentiment: data.voiceSentiment,
-    responseMode: "mixed",
-  });
-
-  log("info", "Orchestrator", "async_pipeline_completed", {
-    userId: data.userId,
-    data: {
-      feedbackType: feedbackResult.feedbackType,
-      insightsCreated: insightResult.insights.length,
-      goalsCreated: goalResult.detectedGoals.length,
-    },
-  });
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -380,7 +463,10 @@ async function embedMessageAsync(
       .where(eq(schema.messages.id, messageId));
   } catch (error) {
     log("warn", "Orchestrator", "embedding_failed", {
-      data: { messageId, error: error instanceof Error ? error.message : String(error) },
+      data: {
+        messageId,
+        error: error instanceof Error ? error.message : String(error),
+      },
     });
   }
 }
@@ -432,33 +518,11 @@ async function getOnboardingState(userId: string) {
   return state;
 }
 
-async function updateOnboardingState(
-  userId: string,
-  diagnosticResult: { coveredAreas: string[]; pendingAreas: string[]; phase: string; initialTraits?: Record<string, unknown> | null }
-) {
-  await db
-    .update(schema.onboardingState)
-    .set({
-      coveredAreas: diagnosticResult.coveredAreas,
-      pendingAreas: diagnosticResult.pendingAreas,
-      currentPhase: diagnosticResult.phase,
-      updatedAt: new Date(),
-    })
-    .where(eq(schema.onboardingState.userId, userId));
-}
-
-async function markOnboardingComplete(
-  userId: string,
-  diagnosticResult: { detectedInteractionStyle?: string | null; initialTraits?: Record<string, unknown> | null }
-) {
+async function markOnboardingComplete(userId: string) {
   await db
     .update(schema.userProfile)
     .set({
       onboardingCompleted: true,
-      interactionStyle: diagnosticResult.detectedInteractionStyle ?? "adaptive",
-      traits: diagnosticResult.initialTraits
-        ? encrypt(JSON.stringify(diagnosticResult.initialTraits))
-        : null,
       updatedAt: new Date(),
     })
     .where(eq(schema.userProfile.userId, userId));
@@ -483,11 +547,11 @@ async function applyProfileUpdates(
   userId: string,
   learningResult: {
     profileUpdates: {
-      traitsToAdd?: Record<string, unknown>;
-      traitsToRemove?: string[];
-      confidenceAdjustment?: number;
+      traitsToAdd?: Record<string, unknown> | null;
+      traitsToRemove?: string[] | null;
+      confidenceAdjustment?: number | null;
     };
-    disprovedPatternsToAdd?: string[];
+    disprovedPatternsToAdd?: string[] | null;
   }
 ) {
   const profile = await getOrCreateProfile(userId);
@@ -536,12 +600,6 @@ async function applyProfileUpdates(
 
   log("info", "LearningAgent", "profile_updated", {
     userId,
-    data: {
-      confidenceScore: newConfidence,
-      traitsAdded: Object.keys(
-        learningResult.profileUpdates.traitsToAdd ?? {}
-      ).length,
-      traitsRemoved: learningResult.profileUpdates.traitsToRemove?.length ?? 0,
-    },
+    data: { confidenceScore: newConfidence },
   });
 }
