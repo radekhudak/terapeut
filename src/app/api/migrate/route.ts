@@ -118,6 +118,37 @@ export async function POST() {
       )
     `);
 
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS test_runs (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        persona_id varchar(50) NOT NULL,
+        user_id uuid NOT NULL,
+        session_id uuid,
+        status varchar(20) NOT NULL DEFAULT 'running',
+        step_count integer NOT NULL DEFAULT 0,
+        stopped_reason varchar(100),
+        started_at timestamp NOT NULL DEFAULT now(),
+        ended_at timestamp
+      )
+    `);
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS test_run_events (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        run_id uuid NOT NULL REFERENCES test_runs(id),
+        step_index integer NOT NULL,
+        event_type varchar(30) NOT NULL,
+        payload_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+        latency_ms bigint,
+        created_at timestamp NOT NULL DEFAULT now()
+      )
+    `);
+    await db.execute(sql`
+      CREATE INDEX IF NOT EXISTS test_runs_status_idx ON test_runs (status)
+    `);
+    await db.execute(sql`
+      CREATE INDEX IF NOT EXISTS test_run_events_run_idx ON test_run_events (run_id, step_index)
+    `);
+
     return NextResponse.json({
       ok: true,
       message: "Migrations applied",

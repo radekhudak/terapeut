@@ -12,6 +12,7 @@ import {
   index,
   uniqueIndex,
   vector,
+  bigint,
 } from "drizzle-orm/pg-core";
 
 // ── Users ──────────────────────────────────────────────────────────
@@ -313,4 +314,38 @@ export const dailyRoutines = pgTable(
       table.routineDate
     ),
   ]
+);
+
+// ── Test Runs (telemetry) ──────────────────────────────────────────
+export const testRuns = pgTable(
+  "test_runs",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    personaId: varchar("persona_id", { length: 50 }).notNull(),
+    userId: uuid("user_id").notNull(),
+    sessionId: uuid("session_id"),
+    status: varchar("status", { length: 20 }).default("running").notNull(),
+    stepCount: integer("step_count").default(0).notNull(),
+    stoppedReason: varchar("stopped_reason", { length: 100 }),
+    startedAt: timestamp("started_at").defaultNow().notNull(),
+    endedAt: timestamp("ended_at"),
+  },
+  (table) => [index("test_runs_status_idx").on(table.status)]
+);
+
+// ── Test Run Events ────────────────────────────────────────────────
+export const testRunEvents = pgTable(
+  "test_run_events",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    runId: uuid("run_id")
+      .notNull()
+      .references(() => testRuns.id),
+    stepIndex: integer("step_index").notNull(),
+    eventType: varchar("event_type", { length: 30 }).notNull(),
+    payloadJson: jsonb("payload_json").default({}).notNull(),
+    latencyMs: bigint("latency_ms", { mode: "number" }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [index("test_run_events_run_idx").on(table.runId, table.stepIndex)]
 );

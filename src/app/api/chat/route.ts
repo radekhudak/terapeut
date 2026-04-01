@@ -76,7 +76,7 @@ export async function POST(request: NextRequest) {
       audioFilename,
     });
 
-    const pendingJob = consumePendingJob();
+    const pendingJob = consumePendingJob(result.sessionId);
     if (pendingJob) {
       after(async () => {
         try {

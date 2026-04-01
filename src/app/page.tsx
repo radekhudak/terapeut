@@ -250,6 +250,15 @@ export default function Home() {
           <ModeIndicator mode={chat.currentMode} />
         </div>
         <div className="flex items-center gap-1">
+          {process.env.NODE_ENV !== "production" && (
+            <a
+              href="/test"
+              className="px-2 py-1 text-[10px] font-mono text-yellow-600 dark:text-yellow-400 bg-yellow-50 dark:bg-yellow-900/30 rounded hover:bg-yellow-100 dark:hover:bg-yellow-900/50 transition-colors"
+              title="Test Agents"
+            >
+              TEST
+            </a>
+          )}
           <button
             onClick={() => {
               setShowUsersPanel((v) => !v);

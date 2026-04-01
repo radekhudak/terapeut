@@ -578,9 +578,9 @@ async function handleNormalChat(
   };
 }
 
-// ── Background job scheduling ──────────────────────────────────────
+// ── Background job scheduling (session-safe) ──────────────────────
 
-let pendingJob: InsightJobData | null = null;
+const pendingJobs = new Map<string, InsightJobData>();
 
 export interface InsightJobData {
   messageId: string;
@@ -593,12 +593,12 @@ export interface InsightJobData {
 }
 
 function scheduleAsyncPipeline(data: InsightJobData) {
-  pendingJob = data;
+  pendingJobs.set(data.sessionId, data);
 }
 
-export function consumePendingJob(): InsightJobData | null {
-  const job = pendingJob;
-  pendingJob = null;
+export function consumePendingJob(sessionId: string): InsightJobData | null {
+  const job = pendingJobs.get(sessionId) ?? null;
+  if (job) pendingJobs.delete(sessionId);
   return job;
 }
 
